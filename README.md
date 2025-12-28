@@ -1,10 +1,14 @@
 # Cell
 
-**Cell** is a powerful compiler that transforms OpenDocument Spreadsheets (`.ods`) into highly optimized, standalone WebAssembly (`.wasm`) binaries.
+![Cell Preview](preview.jpg)
 
-Unlike traditional spreadsheet engines that interpret formulas at runtime, Cell compiles the logic within your spreadsheet cells into machine-code-ready WebAssembly. This enables ultra-low-latency calculations, making it ideal for running complex financial models, physics simulations, or game logic directly in the browser or on the edge.
+**Cell** is an **experimental, array-focused programming language** that lives inside spreadsheets. It compiles OpenDocument Spreadsheets (`.ods`) directly into highly optimized, standalone WebAssembly (`.wasm`) binaries.
 
-## Key Features
+> **⚠️ Note**: This project is a **recreational prototype**. It was built for fun and experimentation to explore what's possible when you treat spreadsheets as a compile target.
+
+Unlike traditional spreadsheet engines that interpret formulas at runtime, Cell compiles the logic—treating **arrays as first-class citizens**—into machine-code-ready WebAssembly. This enables ultra-low-latency calculations, making it ideal for running complex financial models, physics simulations, or game logic directly in the browser.
+
+## ◆ Key Features
 
 *   **Zero Overhead**: Formulas are compiled, not interpreted.
 *   **Advanced Scripting**: Write full procedural code inside cells (Loops, Variables, Functions).
@@ -13,7 +17,7 @@ Unlike traditional spreadsheet engines that interpret formulas at runtime, Cell 
 
 ---
 
-## ⚡ The Cell Language
+## ◆ The Cell Language
 
 Cell treats every cell in your spreadsheet as a potential script. While simple cells can contain just numbers or basic assignments, you can also write full programs using Cell's scripting syntax.
 
@@ -64,7 +68,7 @@ Cell uses a mix of standard symbols and English keywords. **Note the APL-inspire
 
 ---
 
-## 🔄 Control Flow
+## ◆ Control Flow
 
 Cell supports robust control flow constructs, allowing you to build complex logic instead of just linear formulas.
 
@@ -109,7 +113,7 @@ end
 
 ---
 
-## 📦 Functions
+## ◆ Functions
 
 You can define reusable functions within a cell.
 
@@ -127,7 +131,7 @@ Values can also be returned via `yield` (for generator-like behavior in future v
 
 ---
 
-## 🛠 Built-in Functions
+## ◆ Built-in Functions
 
 Cell provides a standard library of intrinsic functions available in the execution environment.
 
@@ -140,7 +144,7 @@ Cell provides a standard library of intrinsic functions available in the executi
 
 ---
 
-## 📎 Cell References
+## ◆ Cell References
 
 You can reference other cells in the spreadsheet using standard syntax.
 
@@ -150,7 +154,21 @@ You can reference other cells in the spreadsheet using standard syntax.
 
 ---
 
-## 🚀 Usage
+## ◆ Example: Guessing Game
+
+Below is logic from `Example_GuessGame_Cell.ods`, demonstrating how multiple cells interact to create a simple game loop.
+
+| Cell | Logic | Description |
+| :--- | :--- | :--- |
+| **A1** | `put("guess the number"); yield input()` | Prompts user and yields input. |
+| **B1** | `rand(0, 100)` | Generates random target number. |
+| **B2** | `val = A1; if val > B1 do put("Lower!") end` | Checks if guess is too high. |
+| **B3** | `val = A1; if val < B1 do put("Higher!") end` | Checks if guess is too low. |
+| **B4** | `val = A1; if val = B1 do put("Correct!") end` | Checks for win. |
+
+---
+
+## ◆ Usage
 
 ### Prerequisites
 *   **Rust** (latest stable)
@@ -175,14 +193,14 @@ wasmtime module.wasm --invoke _start
 
 ---
 
-## 🏗 Architecture
+## ◆ Architecture
 
 1.  **Loader**: Reads ODS XML structure.
 2.  **Parser**: Uses `nom` to parse the cell text into an Abstract Syntax Tree (AST).
 3.  **Codegen**: Traverses the AST and emits raw WebAssembly binary opcodes using `wasm-encoder`.
 4.  **Output**: A clean, dependency-free `.wasm` file.
 
-## 🤝 Contributing
+## ◆ Contributing
 
 Contributions are welcome! Please submit a Pull Request or open an Issue to discuss new operators or features.
 

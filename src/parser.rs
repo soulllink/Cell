@@ -43,6 +43,7 @@ pub enum Expr {
     Call(String, Vec<Expr>),
     Array(Vec<Expr>),
     Input, // New Input variant
+    Generator(u32), // Column Generator
     If(Box<Expr>, Box<Block>, Option<Box<Block>>), // Condition, Then, Else
     Block(Block),
 }
@@ -158,10 +159,8 @@ fn parse_atom(input: &str) -> IResult<&str, Expr> {
         // and handle logic in codegen or assume A:A is mapped to A1:A[MAX].
         // But parse_cell_ref requires digits.
         // We need a parse_col_ref logic.
-        map(tuple((parse_col_index, char(':'), parse_col_index)), |(start_col, _, end_col)| {
-            let start = CellRef { col: start_col, row: 0, col_abs: false, row_abs: false };
-            let end = CellRef { col: end_col, row: u32::MAX, col_abs: false, row_abs: false };
-            Expr::RangeReference(start, end)
+        map(tuple((parse_col_index, char(':'), parse_col_index)), |(start_col, _, _)| {
+            Expr::Generator(start_col)
         }),
         map(parse_cell_ref, Expr::Reference),
         map(parse_ident, Expr::Ident),

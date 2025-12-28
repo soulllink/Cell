@@ -1,16 +1,15 @@
-"put(""guess the number"")
-yield input()","rand(0, 100)","put(""Play again?"")
-if input != Nil
-  return A:A"
-,"current = A:A
+"rand(0, 100)
+put(""guess the number"")
+input()","current = A:A
 if current > B1
   put(""it's more than"", current)
-return A:A",
-,"current = A:A
+return С1","current = A:A
 if current < B1
   put(""it's less than"", current)
-return A:A",
-,"current = A:A
+return С1","current = A:A
 if current = B1
   put(""You right! it is"", current)
-  return C1",
+  return D2"
+,,,"put(""Play again?"")
+if input != Nil
+  return A1"
