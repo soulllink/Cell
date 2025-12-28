@@ -1,15 +1,18 @@
-"rand(0, 100)
-put(""guess the number"")
-input()","current = A:A
-if current > B1
-  put(""it's more than"", current)
-return С1","current = A:A
-if current < B1
-  put(""it's less than"", current)
-return С1","current = A:A
-if current = B1
-  put(""You right! it is"", current)
-  return D2"
-,,,"put(""Play again?"")
-if input != Nil
-  return A1"
+"if secret > 0
+ return B1
+secret = rand(0, 100)
+put(""Secret Set: "", secret)
+return B1","put(""Guess?"")
+guess = input()
+if guess > secret
+ put(""Too High"", guess)
+ return B1","if guess < secret
+ put(""Too Low"", guess)
+ return B1","if guess = secret
+ put(""You Win!"")
+ return D2"
+,,,"secret = 0
+put(""Play Again? 1=yes 0=no"")
+ans = input()
+if ans != 0
+ return A1"

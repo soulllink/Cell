@@ -40,8 +40,8 @@ fn run() -> Result<()> {
     println!("Input: {}", args.input);
     println!("Output: {}", args.output);
 
-    // 1. Load ODS
-    let grid = loader::load_ods(&args.input).map_err(|e| anyhow::anyhow!("Failed to load ODS: {}", e))?;
+    // 1. Load Grid (ODS or CSV)
+    let grid = loader::load_grid(&args.input).map_err(|e| anyhow::anyhow!("Failed to load Grid: {}", e))?;
     println!("Loaded grid with max_col: {}, max_row: {}", grid.max_col, grid.max_row);
 
     // 2. Start Codegen (which includes parsing)

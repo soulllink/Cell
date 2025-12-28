@@ -33,15 +33,13 @@ impl<'a> WasmCompiler<'a> {
     fn scan_locals(stmts: &[Stmt], locals_map: &mut HashMap<String, u32>, locals_types: &mut Vec<ValType>, next_idx: &mut u32) {
         for stmt in stmts {
             match stmt {
-                Stmt::Assign(name, _) | Stmt::For(name, _, _) => {
+                Stmt::For(name, _, body) => {
                     if !locals_map.contains_key(name) {
                         locals_map.insert(name.clone(), *next_idx);
                         locals_types.push(ValType::F64);
                         *next_idx += 1;
                     }
-                    if let Stmt::For(_, _, body) = stmt {
-                         Self::scan_locals(&body.stmts, locals_map, locals_types, next_idx);
-                    }
+                    Self::scan_locals(&body.stmts, locals_map, locals_types, next_idx);
                 },
                 Stmt::While(_, body) => Self::scan_locals(&body.stmts, locals_map, locals_types, next_idx),
                 Stmt::Expr(expr) | Stmt::Return(expr) | Stmt::Yield(expr) => Self::scan_expr_locals(expr, locals_map, locals_types, next_idx),
@@ -161,22 +159,7 @@ impl<'a> WasmCompiler<'a> {
         
         let sum_i_idx = next_local_idx; locals_types.push(ValType::I32); next_local_idx += 1;
         let sum_len_idx = next_local_idx; locals_types.push(ValType::I32); next_local_idx += 1;
-        let sum_acc_idx = next_local_idx; locals_types.push(ValType::F64); next_local_idx += 1;
-
-        // Loop counter locals (For Stmt::Yield loops if needed - but wait, explicit Yield is handled via Global)
-        // Wait, Yield stmt in `codegen` 1.0 handled Vectorized Arrays. 
-        // User says "yield is generator".
-        // If Stmt::Yield is used for logic, it is Generator.
-        // If Stmt::Yield is used for `yield` array loop? "A:A" logic?
-        // Old `Stmt::Yield` impl was for `Expr::Array` iteration.
-        // New logic: `Stmt::Yield(expr)` -> Return value to caller.
-        // Assuming NEW semantics for Yield.
-        
-        // However, `Expr::RangeReference` might still need loop var if used in loop context?
-        // The user example doesn't show `For` loops or `RangeReference` iterations in the old way.
-        // It uses `A:A` as a value.
-        // So I will only include loop var if I see explicit `For` loops.
-        // I will add optional `loop_var_idx` to `compile_expr`.
+        let sum_acc_idx = next_local_idx; locals_types.push(ValType::F64); 
 
         let mut func = Function::new(locals_types.iter().map(|n| (1, *n)));
         let sum_locals_tuple = (sum_i_idx, sum_len_idx, sum_acc_idx);
@@ -186,7 +169,7 @@ impl<'a> WasmCompiler<'a> {
         for stmt in stmts {
              match stmt {
                 Stmt::Assign(name, expr) => {
-                    self.compile_expr(expr, &locals_map, globals, &mut func, sum_locals_tuple, cell_func_map, reg_val_global_idx, None)?;
+                    self.compile_expr(expr, &locals_map, globals, &mut func, sum_locals_tuple, cell_func_map, reg_val_global_idx, None, my_table_idx)?;
                     if let Some(idx) = locals_map.get(name) {
                         func.instruction(&Instruction::LocalSet(*idx));
                     } else if let Some(idx) = globals.get(name) {
@@ -205,30 +188,32 @@ impl<'a> WasmCompiler<'a> {
                              explicit_return = true;
                          }
                      } else {
-                         self.compile_expr(expr, &locals_map, globals, &mut func, sum_locals_tuple, cell_func_map, reg_val_global_idx, None)?;
-                         // Assume validation or generic handling (return Next)
-                         // For Example_GuessGame, only Reference returns are used.
+                         self.compile_expr(expr, &locals_map, globals, &mut func, sum_locals_tuple, cell_func_map, reg_val_global_idx, None, my_table_idx)?;
+                         func.instruction(&Instruction::Drop);
+                         func.instruction(&Instruction::I32Const((my_table_idx + 1) as i32));
+                         func.instruction(&Instruction::Return);
+                         explicit_return = true;
                      }
                 },
                  Stmt::Yield(expr) => {
-                    self.compile_expr(expr, &locals_map, globals, &mut func, sum_locals_tuple, cell_func_map, reg_val_global_idx, None)?;
+                    self.compile_expr(expr, &locals_map, globals, &mut func, sum_locals_tuple, cell_func_map, reg_val_global_idx, None, my_table_idx)?;
                     func.instruction(&Instruction::GlobalSet(reg_val_global_idx)); 
                     func.instruction(&Instruction::I32Const(my_table_idx as i32)); 
                     func.instruction(&Instruction::Return);
                     explicit_return = true;
                 },
                 Stmt::Expr(expr) => {
-                    self.compile_expr(expr, &locals_map, globals, &mut func, sum_locals_tuple, cell_func_map, reg_val_global_idx, None)?;
+                    self.compile_expr(expr, &locals_map, globals, &mut func, sum_locals_tuple, cell_func_map, reg_val_global_idx, None, my_table_idx)?;
                     func.instruction(&Instruction::Drop);
                 },
                 Stmt::While(cond, body) => {
                      func.instruction(&Instruction::Loop(wasm_encoder::BlockType::Empty)); 
                      func.instruction(&Instruction::Block(wasm_encoder::BlockType::Empty)); 
-                     self.compile_expr(cond, &locals_map, globals, &mut func, sum_locals_tuple, cell_func_map, reg_val_global_idx, None)?;
+                     self.compile_expr(cond, &locals_map, globals, &mut func, sum_locals_tuple, cell_func_map, reg_val_global_idx, None, my_table_idx)?;
                      func.instruction(&Instruction::F64Const(0.0));
                      func.instruction(&Instruction::F64Eq); 
                      func.instruction(&Instruction::BrIf(0)); 
-                     self.compile_block(body, &locals_map, globals, &mut func, sum_locals_tuple, false, cell_func_map, reg_val_global_idx, None)?; 
+                     self.compile_block(body, &locals_map, globals, &mut func, sum_locals_tuple, false, cell_func_map, reg_val_global_idx, None, my_table_idx)?; 
                      func.instruction(&Instruction::Br(1)); 
                      func.instruction(&Instruction::End); 
                      func.instruction(&Instruction::End); 
@@ -244,33 +229,39 @@ impl<'a> WasmCompiler<'a> {
         Ok(func)
     }
 
-    fn compile_block(&self, block: &crate::parser::Block, locals: &HashMap<String, u32>, globals: &HashMap<String, u32>, instrs: &mut Function, sum_locals: (u32, u32, u32), needs_result: bool, cell_func_map: &HashMap<(u32, u32), u32>, reg_val_idx: u32, loop_var_idx: Option<u32>) -> Result<()> {
+    fn compile_block(&self, block: &crate::parser::Block, locals: &HashMap<String, u32>, globals: &HashMap<String, u32>, instrs: &mut Function, sum_locals: (u32, u32, u32), needs_result: bool, cell_func_map: &HashMap<(u32, u32), u32>, reg_val_idx: u32, loop_var_idx: Option<u32>, my_table_idx: u32) -> Result<()> {
         let len = block.stmts.len();
         if len == 0 && needs_result { instrs.instruction(&Instruction::F64Const(0.0)); return Ok(()); }
         for (i, stmt) in block.stmts.iter().enumerate() {
             let is_last = i == len - 1;
              match stmt {
                 Stmt::Assign(name, expr) => {
-                    self.compile_expr(expr, locals, globals, instrs, sum_locals, cell_func_map, reg_val_idx, loop_var_idx)?;
+                    self.compile_expr(expr, locals, globals, instrs, sum_locals, cell_func_map, reg_val_idx, loop_var_idx, my_table_idx)?;
                     if let Some(idx) = locals.get(name) { instrs.instruction(&Instruction::LocalSet(*idx)); }
                     else if let Some(idx) = globals.get(name) { instrs.instruction(&Instruction::GlobalSet(*idx)); }
                     if is_last && needs_result { instrs.instruction(&Instruction::F64Const(0.0)); }
                 },
-                Stmt::Return(expr) | Stmt::Yield(expr) => { 
-                     if let Stmt::Yield(e) = stmt {
-                         self.compile_expr(e, locals, globals, instrs, sum_locals, cell_func_map, reg_val_idx, loop_var_idx)?;
-                         instrs.instruction(&Instruction::GlobalSet(reg_val_idx));
-                         // We can't actually return from nested block to function end easily without Br/Return
-                         // Instruction::Return returns from function. Correct.
-                         instrs.instruction(&Instruction::I32Const(0)); // Dummy, need my_idx. 
-                         // ISSUE: compile_block doesn't know my_idx.
-                         // Assume blocks don't do complex Yields in this MVP or use Panic.
-                         // But generic Return is instruction::Return.
-                         instrs.instruction(&Instruction::Return);
+                Stmt::Return(expr) => {
+                     if let Expr::Reference(r) = expr {
+                         if let Some(target_idx) = cell_func_map.get(&(r.col, r.row)) {
+                             instrs.instruction(&Instruction::I32Const(*target_idx as i32));
+                         } else {
+                             instrs.instruction(&Instruction::I32Const((my_table_idx + 1) as i32));
+                         }
+                     } else {
+                         self.compile_expr(expr, locals, globals, instrs, sum_locals, cell_func_map, reg_val_idx, loop_var_idx, my_table_idx)?;
+                         instrs.instruction(&Instruction::Drop);
+                         instrs.instruction(&Instruction::I32Const((my_table_idx + 1) as i32)); 
                      }
+                     instrs.instruction(&Instruction::Return);
+                },
+                Stmt::Yield(expr) => { 
+                     self.compile_expr(expr, locals, globals, instrs, sum_locals, cell_func_map, reg_val_idx, loop_var_idx, my_table_idx)?;
+                     instrs.instruction(&Instruction::GlobalSet(reg_val_idx));
+                     instrs.instruction(&Instruction::Return);
                 },
                 Stmt::Expr(expr) => {
-                    self.compile_expr(expr, locals, globals, instrs, sum_locals, cell_func_map, reg_val_idx, loop_var_idx)?;
+                    self.compile_expr(expr, locals, globals, instrs, sum_locals, cell_func_map, reg_val_idx, loop_var_idx, my_table_idx)?;
                     if !is_last || !needs_result { instrs.instruction(&Instruction::Drop); }
                 },
                  _ => { if is_last && needs_result { instrs.instruction(&Instruction::F64Const(0.0)); } }
@@ -279,8 +270,7 @@ impl<'a> WasmCompiler<'a> {
         Ok(())
     }
 
-    // Added loop_var_idx
-    fn compile_expr(&self, expr: &Expr, locals: &HashMap<String, u32>, globals: &HashMap<String, u32>, instrs: &mut Function, sum_locals: (u32, u32, u32), cell_func_map: &HashMap<(u32, u32), u32>, reg_val_idx: u32, loop_var_idx: Option<u32>) -> Result<()> {
+    fn compile_expr(&self, expr: &Expr, locals: &HashMap<String, u32>, globals: &HashMap<String, u32>, instrs: &mut Function, sum_locals: (u32, u32, u32), cell_func_map: &HashMap<(u32, u32), u32>, reg_val_idx: u32, loop_var_idx: Option<u32>, my_table_idx: u32) -> Result<()> {
         match expr {
             Expr::Literal(lit) => {
                 match lit {
@@ -291,11 +281,24 @@ impl<'a> WasmCompiler<'a> {
                     Literal::String(_) => { instrs.instruction(&Instruction::F64Const(0.0)); },
                 }
             },
+            Expr::If(cond, then_b, else_b) => {
+                 self.compile_expr(cond, locals, globals, instrs, sum_locals, cell_func_map, reg_val_idx, loop_var_idx, my_table_idx)?;
+                 instrs.instruction(&Instruction::F64Const(0.0));
+                 instrs.instruction(&Instruction::F64Ne); 
+                 instrs.instruction(&Instruction::If(BlockType::Result(ValType::F64)));
+                 self.compile_block(then_b, locals, globals, instrs, sum_locals, true, cell_func_map, reg_val_idx, loop_var_idx, my_table_idx)?;
+                 instrs.instruction(&Instruction::Else);
+                 if let Some(eb) = else_b {
+                     self.compile_block(eb, locals, globals, instrs, sum_locals, true, cell_func_map, reg_val_idx, loop_var_idx, my_table_idx)?;
+                 } else {
+                     instrs.instruction(&Instruction::F64Const(0.0));
+                 }
+                 instrs.instruction(&Instruction::End);
+            },
             Expr::Generator(col) => {
-                // A:A -> Call A1 generator.
                 if let Some(idx) = cell_func_map.get(&(*col, 0)) {
                     instrs.instruction(&Instruction::I32Const(*idx as i32));
-                    instrs.instruction(&Instruction::CallIndirect { ty: 6, table: 0 }); // Call A1
+                    instrs.instruction(&Instruction::CallIndirect { ty: 6, table: 0 }); 
                     instrs.instruction(&Instruction::Drop); 
                     instrs.instruction(&Instruction::GlobalGet(reg_val_idx)); 
                 } else {
@@ -317,14 +320,14 @@ impl<'a> WasmCompiler<'a> {
                                 instrs.instruction(&Instruction::Call(0)); 
                             }
                        } else {
-                           self.compile_expr(arg, locals, globals, instrs, sum_locals, cell_func_map, reg_val_idx, loop_var_idx)?;
+                           self.compile_expr(arg, locals, globals, instrs, sum_locals, cell_func_map, reg_val_idx, loop_var_idx, my_table_idx)?;
                            instrs.instruction(&Instruction::Call(0)); 
                        }
                        if i < args.len() - 1 { instrs.instruction(&Instruction::Drop); }
                    }
                 } else if name == "rand" {
-                    self.compile_expr(&args[0], locals, globals, instrs, sum_locals, cell_func_map, reg_val_idx, loop_var_idx)?;
-                    self.compile_expr(&args[1], locals, globals, instrs, sum_locals, cell_func_map, reg_val_idx, loop_var_idx)?;
+                    self.compile_expr(&args[0], locals, globals, instrs, sum_locals, cell_func_map, reg_val_idx, loop_var_idx, my_table_idx)?;
+                    self.compile_expr(&args[1], locals, globals, instrs, sum_locals, cell_func_map, reg_val_idx, loop_var_idx, my_table_idx)?;
                     instrs.instruction(&Instruction::Call(4)); 
                 }
             },
@@ -348,8 +351,8 @@ impl<'a> WasmCompiler<'a> {
                 }
             },
             Expr::BinaryOp(lhs, op, rhs) => {
-                self.compile_expr(lhs, locals, globals, instrs, sum_locals, cell_func_map, reg_val_idx, loop_var_idx)?;
-                self.compile_expr(rhs, locals, globals, instrs, sum_locals, cell_func_map, reg_val_idx, loop_var_idx)?;
+                self.compile_expr(lhs, locals, globals, instrs, sum_locals, cell_func_map, reg_val_idx, loop_var_idx, my_table_idx)?;
+                self.compile_expr(rhs, locals, globals, instrs, sum_locals, cell_func_map, reg_val_idx, loop_var_idx, my_table_idx)?;
                 match op {
                     Op::Add => { instrs.instruction(&Instruction::F64Add); },
                     Op::Sub => { instrs.instruction(&Instruction::F64Sub); },
@@ -357,7 +360,7 @@ impl<'a> WasmCompiler<'a> {
                     Op::Div => { instrs.instruction(&Instruction::F64Div); },
                     Op::Gt => { 
                         instrs.instruction(&Instruction::F64Gt); 
-                        instrs.instruction(&Instruction::F64ConvertI32S); // Convert I32 result of Gt to F64
+                        instrs.instruction(&Instruction::F64ConvertI32S); 
                     },
                     Op::Lt => { 
                          instrs.instruction(&Instruction::F64Lt);
@@ -411,7 +414,36 @@ impl<'a> WasmCompiler<'a> {
         imports.import("env", "print", EntityType::Function(5));
         module.section(&imports);
 
-        // 3. Globals
+        // 3. Functions (Signatures)
+        let mut functions = FunctionSection::new();
+        let mut cell_func_map = HashMap::new();
+        let mut func_indices = Vec::new();
+        let start_func_idx = 6; 
+        for (i, ((col, row), _)) in execution_order.iter().enumerate() {
+            functions.function(6); 
+            cell_func_map.insert((*col, *row), i as u32);
+            func_indices.push(start_func_idx + i as u32);
+        }
+        functions.function(0); // Main loop
+        module.section(&functions);
+
+        // 4. Tables
+        let num_cells = execution_order.len() as u32;
+        let mut tables = TableSection::new();
+        tables.table(TableType { 
+            element_type: RefType::FUNCREF, 
+            minimum: num_cells as u64, 
+            maximum: Some(num_cells as u64),
+            table64: false 
+        });
+        module.section(&tables);
+
+        // 5. Memories
+        let mut memory = MemorySection::new();
+        memory.memory(MemoryType { minimum: 20, maximum: None, memory64: false, shared: false, page_size_log2: None });
+        module.section(&memory);
+
+        // 6. Globals
         let mut global_section = wasm_encoder::GlobalSection::new();
         let mut sorted_globals: Vec<_> = globals_map.iter().collect();
         sorted_globals.sort_by_key(|k| k.1);
@@ -423,44 +455,18 @@ impl<'a> WasmCompiler<'a> {
         global_section.global(wasm_encoder::GlobalType { val_type: ValType::F64, mutable: true, shared: false }, &wasm_encoder::ConstExpr::f64_const(0.0));
         module.section(&global_section);
 
-        // 4. Function Table
-        let num_cells = execution_order.len() as u32;
-        let mut tables = TableSection::new();
-        // Fixed TableType
-        tables.table(TableType { 
-            element_type: RefType::FUNCREF, 
-            minimum: num_cells as u64, 
-            maximum: Some(num_cells as u64),
-            table64: false 
-        });
-        module.section(&tables);
-
-        // 5. Functions & Map
-        let mut functions = FunctionSection::new();
-        let mut cell_func_map = HashMap::new();
-        let mut func_indices = Vec::new();
-        let start_func_idx = 6; 
-        
-        for (i, ((col, row), _)) in execution_order.iter().enumerate() {
-            functions.function(6); 
-            cell_func_map.insert((*col, *row), i as u32);
-            func_indices.push(start_func_idx + i as u32);
-        }
-        functions.function(0); 
-        module.section(&functions);
-
-        // 6. Exports
+        // 7. Exports
         let mut exports = ExportSection::new();
         exports.export("memory", ExportKind::Memory, 0);
         exports.export("_start", ExportKind::Func, start_func_idx + num_cells);
         module.section(&exports);
 
-        // 7. Elements (Table Population)
+        // 8. Elements
         let mut elements = ElementSection::new();
         elements.active(Some(0), &ConstExpr::i32_const(0), Elements::Functions(&func_indices));
         module.section(&elements);
 
-         // 8. Code
+         // 9. Code
         let mut codes = CodeSection::new();
         for (i, ((col, row), content)) in execution_order.iter().enumerate() {
             let stmts = crate::parser::parse_cell_content(content)?;
@@ -478,7 +484,6 @@ impl<'a> WasmCompiler<'a> {
         main_func.instruction(&Instruction::I32GeU);
         main_func.instruction(&Instruction::BrIf(1)); 
         main_func.instruction(&Instruction::LocalGet(0)); 
-        // Fixed CallIndirect
         main_func.instruction(&Instruction::CallIndirect { ty: 6, table: 0 });
         main_func.instruction(&Instruction::LocalSet(0));
         main_func.instruction(&Instruction::Br(0));
@@ -488,10 +493,7 @@ impl<'a> WasmCompiler<'a> {
 
         module.section(&codes);
         
-        let mut memory = MemorySection::new();
-        memory.memory(MemoryType { minimum: 20, maximum: None, memory64: false, shared: false, page_size_log2: None });
-        module.section(&memory);
-        
+        // 10. Data
         if !self.string_literals.is_empty() {
              let mut data_section = DataSection::new();
              for (s, (offset, _)) in &self.string_literals {
