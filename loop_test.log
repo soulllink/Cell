@@ -1,0 +1,112 @@
+warning: unused import: `std::path::Path`
+ --> src\loader.rs:4:5
+  |
+4 | use std::path::Path;
+  |     ^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `anyhow`
+ --> src\compiler\mod.rs:1:22
+  |
+1 | use anyhow::{Result, anyhow};
+  |                      ^^^^^^
+
+warning: unused imports: `DataSection` and `MemArg`
+ --> src\compiler\mod.rs:3:85
+  |
+3 | ..., FunctionSection, Instruction, MemArg, MemoryType,
+  |                                    ^^^^^^
+4 | ...ortSection, EntityType, BlockType, DataSection, ConstExpr,
+  |                                       ^^^^^^^^^^^
+
+warning: unused imports: `Block`, `CellRef`, `Direction`, `Expr`, `FunctionDef`, `Literal`, `Op`, and `Stmt`
+ --> src\compiler\mod.rs:8:21
+  |
+8 | ...::{Expr, Stmt, Op, Literal, CellRef, CellContent, FunctionDef, Direction, Block};
+  |       ^^^^  ^^^^  ^^  ^^^^^^^  ^^^^^^^               ^^^^^^^^^^^  ^^^^^^^^^  ^^^^^
+
+warning: unused import: `FunctionDef`
+ --> src\compiler\types.rs:2:34
+  |
+2 | use crate::parser::{CellContent, FunctionDef};
+  |                                  ^^^^^^^^^^^
+
+warning: unused variable: `idx`
+  --> src\compiler\mod.rs:37:17
+   |
+37 |         let mut idx = 0;
+   |                 ^^^ help: if this is intentional, prefix it with an underscore: `_idx`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+  --> src\compiler\mod.rs:36:13
+   |
+36 |         let mut globals = HashMap::new();
+   |             ----^^^^^^^
+   |             |
+   |             help: remove this `mut`
+   |
+   = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+  --> src\compiler\mod.rs:37:13
+   |
+37 |         let mut idx = 0;
+   |             ----^^^
+   |             |
+   |             help: remove this `mut`
+
+warning: unused variable: `data_cells`
+  --> src\compiler\mod.rs:89:13
+   |
+89 |         let data_cells: Vec<_> = self.parsed_cells.iter()
+   |             ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_data_cells`
+
+warning: methods `get_region_size` and `iter_execution_order` are never used
+  --> src\loader.rs:56:12
+   |
+15 | impl CellGrid {
+   | ------------- methods in this implementation
+...
+56 |     pub fn get_region_size(&self, col: u32, row: u32) -> u32 {
+   |            ^^^^^^^^^^^^^^^
+...
+66 |     pub fn iter_execution_order(&self) -> Vec<((u32, u32), &String)> {
+   |            ^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: variants `Array` and `Block` are never constructed
+  --> src\parser.rs:73:5
+   |
+64 | pub enum Expr {
+   |          ---- variants in this enum
+...
+73 |     Array(Vec<Expr>),
+   |     ^^^^^
+...
+77 |     Block(Block),
+   |     ^^^^^
+   |
+   = note: `Expr` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: method `get_cell_memory_offset` is never used
+  --> src\compiler\mod.rs:78:8
+   |
+25 | impl<'a> WasmCompiler<'a> {
+   | ------------------------- method in this implementation
+...
+78 |     fn get_cell_memory_offset(&self, col: u32, row: u32) -> u32 {
+   |        ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `cell` (bin "cell" test) generated 12 warnings (run `cargo fix --bin "cell" --tests` to apply 7 suggestions)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.04s
+     Running unittests src\main.rs (target\debug\deps\cell-cf4fb99bccb428b0.exe)
+
+running 1 test
+test parser::test_parse_fizzbuzz_while ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.00s
+

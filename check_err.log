@@ -1,0 +1,102 @@
+    Checking cell v0.1.0 (I:\GitProjects\Cell)
+warning: unused import: `std::path::Path`
+ --> src\loader.rs:4:5
+  |
+4 | use std::path::Path;
+  |     ^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `anyhow`
+ --> src\compiler\mod.rs:1:22
+  |
+1 | use anyhow::{Result, anyhow};
+  |                      ^^^^^^
+
+warning: unused imports: `DataSection` and `MemArg`
+ --> src\compiler\mod.rs:3:85
+  |
+3 |     CodeSection, ExportKind, ExportSection, Function, FunctionSection, Instruction, MemArg, MemoryType,
+  |                                                                                     ^^^^^^
+4 |     MemorySection, Module, TypeSection, ValType, ImportSection, EntityType, BlockType, DataSection, ConstExpr,
+  |                                                                                        ^^^^^^^^^^^
+
+warning: unused imports: `Block`, `CellRef`, `Direction`, `Expr`, `FunctionDef`, `Literal`, `Op`, and `Stmt`
+ --> src\compiler\mod.rs:8:21
+  |
+8 | use crate::parser::{Expr, Stmt, Op, Literal, CellRef, CellContent, FunctionDef, Direction, Block};
+  |                     ^^^^  ^^^^  ^^  ^^^^^^^  ^^^^^^^               ^^^^^^^^^^^  ^^^^^^^^^  ^^^^^
+
+warning: unused import: `FunctionDef`
+ --> src\compiler\types.rs:2:34
+  |
+2 | use crate::parser::{CellContent, FunctionDef};
+  |                                  ^^^^^^^^^^^
+
+error[E0308]: mismatched types
+   --> src\compiler\mod.rs:235:123
+    |
+235 | ...e::FUNCREF, Elements::Functions(std::borrow::Cow::Borrowed(func_refs.as_slice())));
+    |                ------------------- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `&[u32]`, found `Cow<'_, [u32]>`
+    |                |
+    |                arguments to this enum variant are incorrect
+    |
+    = note: expected reference `&[u32]`
+                    found enum `Cow<'_, [u32]>`
+note: tuple variant defined here
+   --> C:\Users\soull\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\wasm-encoder-0.211.1\src\core\elements.rs:48:5
+    |
+ 48 |     Functions(&'a [u32]),
+    |     ^^^^^^^^^
+help: consider borrowing here
+    |
+235 |              elements.active(Some(0), &ConstExpr::i32_const(start_func_idx as i32), RefType::FUNCREF, Elements::Functions(&std::borrow::Cow::Borrowed(func_refs.as_slice())));
+    |                                                                                                                           +
+
+error[E0061]: this method takes 3 arguments but 4 arguments were supplied
+   --> src\compiler\mod.rs:235:23
+    |
+235 | ...   elements.active(Some(0), &ConstExpr::i32_const(start_func_idx as i32), RefType::FUNCREF, Elements::Functions(std::borrow::Cow::Borr...
+    |                ^^^^^^                                                        ---------------- unexpected argument #3 of type `RefType`
+    |
+note: method defined here
+   --> C:\Users\soull\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\wasm-encoder-0.211.1\src\core\elements.rs:168:12
+    |
+168 |     pub fn active(
+    |            ^^^^^^
+help: remove the extra argument
+    |
+235 -              elements.active(Some(0), &ConstExpr::i32_const(start_func_idx as i32), RefType::FUNCREF, Elements::Functions(std::borrow::Cow::Borrowed(func_refs.as_slice())));
+235 +              elements.active(Some(0), &ConstExpr::i32_const(start_func_idx as i32), Elements::Functions(std::borrow::Cow::Borrowed(func_refs.as_slice())));
+    |
+
+warning: unused variable: `idx`
+  --> src\compiler\mod.rs:37:17
+   |
+37 |         let mut idx = 0;
+   |                 ^^^ help: if this is intentional, prefix it with an underscore: `_idx`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+  --> src\compiler\mod.rs:36:13
+   |
+36 |         let mut globals = HashMap::new();
+   |             ----^^^^^^^
+   |             |
+   |             help: remove this `mut`
+   |
+   = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+  --> src\compiler\mod.rs:37:13
+   |
+37 |         let mut idx = 0;
+   |             ----^^^
+   |             |
+   |             help: remove this `mut`
+
+Some errors have detailed explanations: E0061, E0308.
+For more information about an error, try `rustc --explain E0061`.
+warning: `cell` (bin "cell") generated 8 warnings
+error: could not compile `cell` (bin "cell") due to 2 previous errors; 8 warnings emitted

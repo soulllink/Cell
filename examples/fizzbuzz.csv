@@ -1,0 +1,26 @@
+"(FizzBuzz! do
+  i = 1
+  while i < 16 do
+    found = 0
+    if mod(i, 15) = 0 do
+      put(""FizzBuzz"")
+      found = 1
+    end
+    if found = 0 do
+      if mod(i, 3) = 0 do
+        put(""Fizz"")
+        found = 1
+      end
+    end
+    if found = 0 do
+      if mod(i, 5) = 0 do
+        put(""Buzz"")
+        found = 1
+      end
+    end
+    if found = 0 do
+      put(i)
+    end
+    i = i + 1
+  end
+end)"

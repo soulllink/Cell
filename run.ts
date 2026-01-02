@@ -1,4 +1,5 @@
-const wasmCode = await Deno.readFile("output.wasm");
+const filename = Deno.args[0] || "output.wasm";
+const wasmCode = await Deno.readFile(filename);
 
 let wasmInstance: WebAssembly.Instance;
 
@@ -17,7 +18,11 @@ const importObject = {
             const bytes = mem.slice(ptr, ptr + len);
             const str = new TextDecoder().decode(bytes);
             console.log("Output:", str);
-        }
+        },
+        sin: Math.sin, cos: Math.cos, tan: Math.tan,
+        asin: Math.asin, acos: Math.acos, atan: Math.atan,
+        hypot: Math.hypot,
+        fmod: (x, y) => x % y,
     }
 };
 
@@ -27,10 +32,12 @@ try {
 
     console.log("Running WASM...");
     // _start is exported by the compiler
-    if (typeof wasmInstance.exports._start === "function") {
-        wasmInstance.exports._start();
+    // The compiler exports "run" as the entry point
+    const runFunc = wasmInstance.exports.run as CallableFunction;
+    if (typeof runFunc === "function") {
+        runFunc();
     } else {
-        console.error("Error: _start function not found in exports");
+        console.error("Error: 'run' function not found in exports");
     }
     console.log("Done.");
 } catch (e) {

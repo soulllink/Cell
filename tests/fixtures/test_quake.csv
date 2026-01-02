@@ -1,0 +1,3 @@
+5,"(Standard! do put(hypot(3, 4)) end)"
+5,"(QuakeHypot! do put(q_hypot(3, 4)) end)"
+0.1,"(QuakeRsqrt! do put(q_rsqrt(100)) end)"

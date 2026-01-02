@@ -1,19 +1,37 @@
 use anyhow::{Result, anyhow};
 use nom::{
     branch::alt,
-    bytes::complete::{tag, take_while1, take_until},
+    bytes::complete::{tag, take_while1},
     character::complete::{alpha1, alphanumeric1, digit1, multispace0, char},
     combinator::{map, map_res, opt, recognize, value, verify},
-    multi::{many0, separated_list0, separated_list1},
+    multi::{many0, separated_list0},
     sequence::{delimited, pair, preceded, tuple, terminated},
     IResult,
 };
 
+// ============================================================================
+// AST Definitions
+// ============================================================================
+
 #[derive(Debug, PartialEq, Clone)]
 pub enum Op {
+    // Arithmetic
     Add, Sub, Mul, Div, Power, 
-    Eq, Neq, Lt, Gt,
-    Rho, Iota, Ceil, Floor, Stile, Log, Circular, Radix,
+    // Comparison
+    Eq, Neq, Lt, Gt, Le, Ge,
+    // Logical
+    And, Or, Match,
+    // List/Array
+    Right, Concat, Take, Drop, Pad, Find, Apply,
+    // Other
+    Mod,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum UnaryOp {
+    Identity, Flip, Negate, First, Sqrt, Odometer, Where, Reverse, 
+    GradeUp, GradeDown, Group, Not, Enlist, Null, Length, Floor, 
+    String, Unique, Type, Eval,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -33,18 +51,29 @@ pub struct CellRef {
     pub row_abs: bool,
 }
 
+/// Relative addressing: @left, @right, @top, @bottom
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum Direction {
+    Left,
+    Right,
+    Top,
+    Bottom,
+}
+
 #[derive(Debug, PartialEq, Clone)]
 pub enum Expr {
     Literal(Literal),
     Reference(CellRef),
+    RelativeRef(Direction),
     RangeReference(CellRef, CellRef),
     Ident(String),
+    UnaryOp(UnaryOp, Box<Expr>),
     BinaryOp(Box<Expr>, Op, Box<Expr>),
     Call(String, Vec<Expr>),
     Array(Vec<Expr>),
-    Input, // New Input variant
-    Generator(u32), // Column Generator
-    If(Box<Expr>, Box<Block>, Option<Box<Block>>), // Condition, Then, Else
+    Input,
+    Generator(u32),
+    If(Box<Expr>, Box<Block>, Option<Box<Block>>),
     Block(Block),
 }
 
@@ -60,11 +89,35 @@ pub enum Stmt {
     Yield(Expr),
     Expr(Expr),
     While(Expr, Block),
-    For(String, Expr, Block), // var, iter_expr, body
-    FnDef(String, Vec<String>, Block), // name, args, body
+    For(String, Expr, Block),
+    FnDef(String, Vec<String>, Block),
 }
 
-// --- Parsing Logic ---
+// ============================================================================
+// New Cell-Level AST
+// ============================================================================
+
+/// Represents a parsed cell's content.
+#[derive(Debug, PartialEq, Clone)]
+pub enum CellContent {
+    /// Data cell: just a value (number, string, etc.)
+    Data(Literal),
+    /// Code cell: a named function block
+    Code(FunctionDef),
+}
+
+/// A function definition within a cell: `(Name do ... end)`
+#[derive(Debug, PartialEq, Clone)]
+pub struct FunctionDef {
+    pub name: String,
+    pub args: Vec<String>,
+    pub is_active: bool, // true if name ends with `!`
+    pub body: Block,
+}
+
+// ============================================================================
+// Parsing Helpers
+// ============================================================================
 
 fn ws<'a, F: 'a, O, E: nom::error::ParseError<&'a str>>(inner: F) -> impl FnMut(&'a str) -> IResult<&'a str, O, E>
 where
@@ -83,10 +136,16 @@ fn parse_ident(input: &str) -> IResult<&str, String> {
         let keywords = [
             "if", "else", "do", "end", "while", "for", "in", "fn", "return", "yield", 
             "true", "false", "nil", "input",
-            "plus", "minus", "times", "div", "pow", "range", "ceil", "floor", "mod", "log", "trig", "sqrt"
         ];
         !keywords.contains(&s)
     })(input).map(|(i, s)| (i, s.to_string()))
+}
+
+/// Parse a function name, possibly ending with `!` for self-invocation
+fn parse_func_name(input: &str) -> IResult<&str, (String, bool)> {
+    let (input, name) = parse_ident(input)?;
+    let (input, bang) = opt(char('!'))(input)?;
+    Ok((input, (name, bang.is_some())))
 }
 
 fn parse_literal(input: &str) -> IResult<&str, Literal> {
@@ -94,7 +153,16 @@ fn parse_literal(input: &str) -> IResult<&str, Literal> {
         map(tag("true"), |_| Literal::Bool(true)),
         map(tag("false"), |_| Literal::Bool(false)),
         map(tag("nil"), |_| Literal::Nil),
-        map(digit1, |s: &str| Literal::Int(s.parse::<i64>().unwrap())),
+        // Float with decimal
+        map_res(
+            recognize(tuple((opt(char('-')), digit1, char('.'), digit1))),
+            |s: &str| s.parse::<f64>().map(Literal::Float)
+        ),
+        // Integer
+        map_res(
+            recognize(tuple((opt(char('-')), digit1))),
+            |s: &str| s.parse::<i64>().map(Literal::Int)
+        ),
         map(delimited(char('"'), take_while1(|c| c != '"'), char('"')), |s: &str| Literal::String(s.to_string())),
     ))(input)
 }
@@ -117,6 +185,19 @@ fn parse_cell_ref(input: &str) -> IResult<&str, CellRef> {
     let (input, row) = map_res(digit1, |s: &str| s.parse::<u32>())(input)?;
     
     Ok((input, CellRef { col, row: row.saturating_sub(1), col_abs, row_abs }))
+}
+
+/// Parse relative reference: @left, @right, @top, @bottom
+fn parse_relative_ref(input: &str) -> IResult<&str, Direction> {
+    preceded(
+        char('@'),
+        alt((
+            value(Direction::Left, tag("left")),
+            value(Direction::Right, tag("right")),
+            value(Direction::Top, tag("top")),
+            value(Direction::Bottom, tag("bottom")),
+        ))
+    )(input)
 }
 
 fn parse_block(input: &str) -> IResult<&str, Block> {
@@ -150,15 +231,12 @@ fn parse_if(input: &str) -> IResult<&str, Expr> {
 fn parse_atom(input: &str) -> IResult<&str, Expr> {
     alt((
         parse_if,
+        // Relative reference (@left, @right, @top, @bottom)
+        map(parse_relative_ref, Expr::RelativeRef),
         map(parse_literal, Expr::Literal),
-        map(terminated(tag("input"), opt(tuple((ws(char('(')), ws(char(')')))))), |_| Expr::Input), // Input keyword with optional ()
+        map(terminated(tag("input"), opt(tuple((ws(char('(')), ws(char(')')))))), |_| Expr::Input),
         delimited(char('('), ws(parse_expr), char(')')),
         map(tuple((parse_cell_ref, char(':'), parse_cell_ref)), |(start, _, end)| Expr::RangeReference(start, end)),
-        // New: A:B syntax (Column Range) -> Treated as A1:B{MaxRow} internally? 
-        // Or specific RangeReference variant. For now, let's keep it strictly parse_cell_ref based ranges for MVP
-        // and handle logic in codegen or assume A:A is mapped to A1:A[MAX].
-        // But parse_cell_ref requires digits.
-        // We need a parse_col_ref logic.
         map(tuple((parse_col_index, char(':'), parse_col_index)), |(start_col, _, _)| {
             Expr::Generator(start_col)
         }),
@@ -182,34 +260,20 @@ fn parse_call_or_atom(input: &str) -> IResult<&str, Expr> {
 }
 
 fn parse_factor(input: &str) -> IResult<&str, Expr> {
-    let (input, lhs) = ws(parse_call_or_atom)(input)?;
+    let (input, lhs) = ws(parse_unary)(input)?;
     let (input, op) = opt(tuple((
         ws(alt((
-            tag("times"), tag("div"), tag("pow"), 
-            tag("reshape"), tag("range"), tag("ceil"), tag("floor"), 
-            tag("mod"), tag("log"), tag("trig"), tag("sqrt"),
-            tag("*"), tag("/")
+            tag("×"), tag("*"), tag("/")
         ))),
         parse_factor
     )))(input)?; 
     
     if let Some((op_str, rhs)) = op {
         let op = match op_str {
-            "times" => Op::Mul,
-            "div" => Op::Div,
-            "pow" => Op::Power,
-            "reshape" => Op::Rho,
-            "range" => Op::Iota,
-            "ceil" => Op::Ceil,
-            "floor" => Op::Floor,
-            "mod" => Op::Stile,
-            "log" => Op::Log,
-            "trig" => Op::Circular,
-            "sqrt" => Op::Radix,
-            "*" => Op::Power, // * is Power
+            "×" => Op::Mul,
+            "*" => Op::Power,
             "/" => Op::Div,
             _ => unreachable!(),
-
         };
         Ok((input, Expr::BinaryOp(Box::new(lhs), op, Box::new(rhs))))
     } else {
@@ -217,26 +281,17 @@ fn parse_factor(input: &str) -> IResult<&str, Expr> {
     }
 }
 
-
 fn parse_term(input: &str) -> IResult<&str, Expr> {
     let (input, lhs) = parse_factor(input)?;
     let (input, op) = opt(tuple((
-        ws(alt((
-            tag("+"), tag("-"),
-            tag("plus"), tag("minus")
-        ))),
+        ws(alt((tag("+"), tag("-")))),
         parse_term
     )))(input)?;
     
     if let Some((op_var, rhs)) = op {
-        // op_var is char? No, alt returns different types?
-        // tag returns &str, char returns char.
-        // alt requires same type.
-        // Solution: Use tag for all.
-        // And match string.
         let op = match op_var { 
-            "+" | "plus" => Op::Add, 
-            "-" | "minus" => Op::Sub, 
+            "+" => Op::Add, 
+            "-" => Op::Sub, 
             _ => unreachable!() 
         };
         Ok((input, Expr::BinaryOp(Box::new(lhs), op, Box::new(rhs))))
@@ -249,7 +304,10 @@ fn parse_comparison(input: &str) -> IResult<&str, Expr> {
     let (input, lhs) = parse_term(input)?;
     let (input, op) = opt(tuple((
         ws(alt((
-            tag("="), tag("!="), tag("<"), tag(">")
+            tag("!="), tag("="), tag("<="), tag(">="), tag("<"), tag(">"),
+            // Add other comparison-like ops if needed, e.g. Match "Match"
+            tag("Match"), tag("And"), tag("Or"), tag("Mod"),
+            tag("Right"), tag("Concat"), tag("Take"), tag("Drop"), tag("Pad"), tag("Find"), tag("Apply")
         ))),
         parse_comparison
     )))(input)?;
@@ -260,6 +318,19 @@ fn parse_comparison(input: &str) -> IResult<&str, Expr> {
             "!=" => Op::Neq,
             "<" => Op::Lt,
             ">" => Op::Gt,
+            "<=" => Op::Le,
+            ">=" => Op::Ge,
+            "Match" => Op::Match,
+            "And" => Op::And,
+            "Or" => Op::Or,
+            "Mod" => Op::Mod,
+            "Right" => Op::Right,
+            "Concat" => Op::Concat,
+            "Take" => Op::Take,
+            "Drop" => Op::Drop,
+            "Pad" => Op::Pad,
+            "Find" => Op::Find,
+            "Apply" => Op::Apply,
             _ => unreachable!(),
         };
         Ok((input, Expr::BinaryOp(Box::new(lhs), op, Box::new(rhs))))
@@ -268,7 +339,69 @@ fn parse_comparison(input: &str) -> IResult<&str, Expr> {
     }
 }
 
+fn parse_unary(input: &str) -> IResult<&str, Expr> {
+    let (input, op_str) = opt(ws(alt((
+        alt((
+            tag("Self"), tag("Flip"), tag("Negate"), tag("First"), tag("Sqrt"), 
+            tag("Enum"), tag("Odometer"), tag("Where"), tag("Reverse"), 
+            tag("Ascend"), tag("Open"), tag("Descend"), tag("Close"), 
+            tag("Group"), tag("Unitmat"), tag("Not"), tag("Enlist"), 
+            tag("Null"), tag("Length"), tag("Size"), tag("Floor")
+        )),
+        alt((
+            tag("Lowercase"), tag("String"), tag("Uniq"), tag("Type"), 
+            tag("Get"), tag("Eval"), tag("Values")
+        ))
+    ))))(input)?;
+
+    if let Some(op_str) = op_str {
+        let op = match op_str {
+            "Self" => UnaryOp::Identity,
+            "Flip" => UnaryOp::Flip,
+            "Negate" => UnaryOp::Negate,
+            "First" => UnaryOp::First,
+            "Sqrt" => UnaryOp::Sqrt,
+            "Enum" | "Odometer" => UnaryOp::Odometer,
+            "Where" => UnaryOp::Where,
+            "Reverse" => UnaryOp::Reverse,
+            "Ascend" | "Open" => UnaryOp::GradeUp,
+            "Descend" | "Close" => UnaryOp::GradeDown,
+            "Group" | "Unitmat" => UnaryOp::Group,
+            "Not" => UnaryOp::Not,
+            "Enlist" => UnaryOp::Enlist,
+            "Null" => UnaryOp::Null,
+            "Length" | "Size" => UnaryOp::Length,
+            "Floor" | "Lowercase" => UnaryOp::Floor,
+            "String" => UnaryOp::String,
+            "Uniq" => UnaryOp::Unique,
+            "Type" => UnaryOp::Type,
+            "Get" | "Eval" | "Values" => UnaryOp::Eval,
+            _ => unreachable!(),
+        };
+        let (input, expr) = parse_unary(input)?; // Right-associative or recursive
+        Ok((input, Expr::UnaryOp(op, Box::new(expr))))
+    } else {
+        // Fallback to atoms/calls
+        parse_call_or_atom(input)
+    }
+}
+
 fn parse_expr(input: &str) -> IResult<&str, Expr> {
+    // Top level expression parsing
+    // Hierarchy: 
+    // Comparison (Binary) -> Term (+/-) -> Factor (*//) -> Unary -> Call/Atom
+    // Wait, typical precedence order:
+    // Comparison (lowest)
+    // Add/Sub
+    // Mul/Div
+    // Unary (highest bind)
+    
+    // In current implementation:
+    // parse_comparison calls parse_term
+    // parse_term calls parse_factor
+    // parse_factor CURRENTLY calls parse_call_or_atom directly
+    // WE NEED TO INSERT parse_unary IN BETWEEN factor and atom
+    
     parse_comparison(input)
 }
 
@@ -288,21 +421,65 @@ fn parse_stmt(input: &str) -> IResult<&str, Stmt> {
         
         map(tuple((tag("return"), ws(parse_expr))), |(_, e)| Stmt::Return(e)),
         map(tuple((tag("yield"), ws(parse_expr))), |(_, e)| Stmt::Yield(e)),
-        map(tuple((tag("put"), ws(char('(')), take_until(")"), char(')'))), |(_, _, content, _): (&str, _, &str, _)| {
-             // Try to parse content as expression list
-             let mut parse_args = separated_list0(ws(char(',')), parse_expr);
-             match parse_args(content) {
-                 Ok((rem, args)) if rem.trim().is_empty() => Stmt::Expr(Expr::Call("put".to_string(), args)),
-                 _ => {
-                     // Fallback: treat as raw string
-                     Stmt::Expr(Expr::Call("put".to_string(), vec![Expr::Literal(Literal::String(content.to_string()))]))
-                 }
-             }
-        }),
+        // put() as a statement
+        map(tuple((
+            tag("put"),
+            delimited(
+                ws(char('(')),
+                separated_list0(ws(char(',')), parse_expr),
+                ws(char(')'))
+            )
+        )), |(_, args)| Stmt::Expr(Expr::Call("put".to_string(), args))),
         map(tuple((parse_ident, ws(char('=')), ws(parse_expr))), |(id, _, e)| Stmt::Assign(id, e)),
         map(parse_expr, Stmt::Expr),
     ))(input)
 }
+
+// ============================================================================
+// Top-Level Cell Parsing (NEW SYNTAX)
+// ============================================================================
+
+/// Parse the new Cell syntax: `(FuncName do ... end)` or plain data
+pub fn parse_cell(input: &str) -> Result<CellContent> {
+    let trimmed = input.trim();
+    
+    // Check if it's a function definition: starts with `(` and ends with `)`
+    if trimmed.starts_with('(') && trimmed.ends_with(')') {
+        // Extract inner content
+        let inner = &trimmed[1..trimmed.len()-1].trim();
+        
+        // Parse: Name[!] [args...] do ... end
+        let (remaining, (name, is_active)) = parse_func_name(inner)
+            .map_err(|e| anyhow!("Failed to parse function name: {}", e))?;
+        
+        let (remaining, args) = many0(ws(parse_ident))(remaining)
+             .map_err(|e| anyhow!("Failed to parse function args: {}", e))?;
+            
+        let (remaining, body) = parse_block(remaining.trim())
+            .map_err(|e| anyhow!("Failed to parse function body: {}", e))?;
+        
+        if !remaining.trim().is_empty() {
+            return Err(anyhow!("Unparsed content in function: {}", remaining));
+        }
+        
+        Ok(CellContent::Code(FunctionDef { name, args, is_active, body }))
+    } else {
+        // Try to parse as a literal (data cell)
+        match parse_literal(trimmed) {
+            Ok((remaining, lit)) if remaining.trim().is_empty() => {
+                Ok(CellContent::Data(lit))
+            },
+            _ => {
+                // Fallback: treat as string data
+                Ok(CellContent::Data(Literal::String(trimmed.to_string())))
+            }
+        }
+    }
+}
+
+// ============================================================================
+// Legacy API (for backward compatibility during transition)
+// ============================================================================
 
 pub fn parse_cell_content(input: &str) -> Result<Vec<Stmt>> {
     let (input, stmts) = many0(terminated(ws(parse_stmt), opt(char(';'))))(input)
@@ -315,144 +492,9 @@ pub fn parse_cell_content(input: &str) -> Result<Vec<Stmt>> {
     Ok(stmts)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_parse_simple_expr() {
-        let input = "10";
-        let res = parse_cell_content(input).unwrap();
-        assert_eq!(res.len(), 1);
-        match &res[0] {
-            Stmt::Expr(Expr::Literal(Literal::Int(10))) => (),
-            _ => panic!("Expected Expr(Lit(10))"),
-        }
-    }
-
-    #[test]
-    fn test_parse_ref() {
-        let input = "A1";
-        let res = parse_cell_content(input).unwrap();
-        assert_eq!(res.len(), 1);
-        match &res[0] {
-            Stmt::Expr(Expr::Reference(r)) => {
-                assert_eq!(r.col, 0);
-                assert_eq!(r.row, 0); 
-            },
-            _ => panic!("Expected Expr(Ref)"),
-        }
-    }
-
-    #[test]
-    fn test_parse_assign() {
-        let input = "x = A1 + 10";
-        let res = parse_cell_content(input).unwrap();
-        assert_eq!(res.len(), 1);
-        match &res[0] {
-            Stmt::Assign(id, _) => {
-                assert_eq!(id, "x");
-            },
-            _ => panic!("Expected Assign"),
-        }
-    }
-
-    #[test]
-    fn test_parse_yield() {
-        let input = "yield A1";
-        let res = parse_cell_content(input).unwrap();
-        match &res[0] {
-            Stmt::Yield(_) => (),
-            _ => panic!("Expected Yield"),
-        }
-    }
-
-    #[test]
-    fn test_parse_range() {
-        let input = "A1:Z5";
-        let res = parse_cell_content(input).unwrap();
-        match &res[0] {
-            Stmt::Expr(Expr::RangeReference(s, e)) => {
-                assert_eq!(s.col, 0);
-                assert_eq!(e.col, 25);
-            },
-            _ => panic!("Expected Range"),
-        }
-    }
-    
-    #[test]
-    fn test_parse_loops() {
-        let input = "for x in A1:A10 do put(x) end";
-        let res = parse_cell_content(input).unwrap();
-        match &res[0] {
-            Stmt::For(var, _, _) => assert_eq!(var, "x"),
-            _ => panic!("Expected For"),
-        }
-        
-        let input_while = "while true do x = x + 1 end";
-        let res = parse_cell_content(input_while).unwrap();
-        match &res[0] {
-            Stmt::While(_, _) => (),
-            _ => panic!("Expected While"),
-        }
-    }
-    
-    #[test]
-    fn test_parse_fn_def() {
-        let input = "fn my_func(a, b) do return a + b end";
-        let res = parse_cell_content(input).unwrap();
-        assert_eq!(res.len(), 1);
-        match &res[0] {
-            Stmt::FnDef(name, args, _) => {
-                assert_eq!(name, "my_func");
-                assert_eq!(args, &vec!["a".to_string(), "b".to_string()]);
-            },
-            _ => panic!("Expected FnDef"),
-        }
-    }
-
-    #[test]
-    fn test_parse_if() {
-        let input = "if true do return 1 else return 0 end";
-        let res = parse_cell_content(input).unwrap();
-         match &res[0] {
-            Stmt::Expr(Expr::If(_, _, Some(_))) => (),
-            _ => panic!("Expected If with Else"),
-        }
-
-        let input_no_else = "if false do return 1 end";
-        let res_no_else = parse_cell_content(input_no_else).unwrap();
-        match &res_no_else[0] {
-            Stmt::Expr(Expr::If(_, _, None)) => (),
-            _ => panic!("Expected If without Else"),
-        }
-    }
+// ============================================================================
+// Tests
+// ============================================================================
 
 
-    #[test]
-    fn test_parse_new_ops() {
-        // Test Unicode multiplication and new ops
-        let input = "x × y";
-        let res = parse_cell_content(input).unwrap();
-         match &res[0] {
-            Stmt::Expr(Expr::BinaryOp(_, Op::Mul, _)) => (),
-            _ => panic!("Expected Mul ×"),
-        }
-        
-        // Power *
-        let input_pow = "x * y";
-        let res_pow = parse_cell_content(input_pow).unwrap();
-         match &res_pow[0] {
-            Stmt::Expr(Expr::BinaryOp(_, Op::Power, _)) => (),
-            _ => panic!("Expected Power *"),
-        }
 
-        // Rho ⍴
-        let input_rho = "3 ⍴ 1";
-        let res_rho = parse_cell_content(input_rho).unwrap();
-         match &res_rho[0] {
-            Stmt::Expr(Expr::BinaryOp(_, Op::Rho, _)) => (),
-            _ => panic!("Expected Rho ⍴"),
-        }
-    }
-}

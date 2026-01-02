@@ -1,0 +1,3 @@
+3,"(D! do put(min(@left, 10)) end)"
+3,"(E! do put(hypot(@left, 4)) end)"
+10,"(F! do put(min(@left, 20)); put(max(@left, 20)) end)"

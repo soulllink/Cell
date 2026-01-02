@@ -1,0 +1,12 @@
+"(CountDiv42! do
+  i = 1
+  count = 0
+  limit = 10000
+  while i < limit do
+    if mod(i, 42) = 0 do
+      count = count + 1
+    end
+    i = i + 1
+  end
+  put(count)
+end)"

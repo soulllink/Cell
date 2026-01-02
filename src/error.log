@@ -1,0 +1,92 @@
+    Checking cell v0.1.0 (I:\GitProjects\Cell)
+warning: unused import: `std::path::Path`
+ --> src\loader.rs:4:5
+  |
+4 | use std::path::Path;
+  |     ^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `anyhow`
+ --> src\codegen.rs:1:22
+  |
+1 | use anyhow::{Result, anyhow};
+  |                      ^^^^^^
+
+warning: unused import: `CellRef`
+ --> src\codegen.rs:8:46
+  |
+8 | use crate::parser::{Expr, Stmt, Op, Literal, CellRef, CellContent, FunctionDef, Direction, Block};
+  |                                              ^^^^^^^
+
+error[E0308]: mismatched types
+   --> src\codegen.rs:717:22
+    |
+717 |             minimum: table_count + 100,
+    |                      ^^^^^^^^^^^^^^^^^ expected `u64`, found `u32`
+
+error[E0063]: missing field `table64` in initializer of `TableType`
+   --> src\codegen.rs:715:22
+    |
+715 |         tables.table(TableType {
+    |                      ^^^^^^^^^ missing `table64`
+
+error[E0063]: missing field `page_size_log2` in initializer of `MemoryType`
+   --> src\codegen.rs:724:25
+    |
+724 |         memories.memory(MemoryType {
+    |                         ^^^^^^^^^^ missing `page_size_log2`
+
+error[E0063]: missing field `shared` in initializer of `GlobalType`
+   --> src\codegen.rs:737:17
+    |
+737 |                 GlobalType { val_type: ValType::F64, mutable: true },
+    |                 ^^^^^^^^^^ missing `shared`
+
+error[E0063]: missing field `shared` in initializer of `GlobalType`
+   --> src\codegen.rs:744:13
+    |
+744 |             GlobalType { val_type: ValType::F64, mutable: true },
+    |             ^^^^^^^^^^ missing `shared`
+
+error[E0308]: mismatched types
+   --> src\codegen.rs:768:123
+    |
+768 | ...), RefType::FUNCREF, Elements::Functions(std::borrow::Cow::Owned(func_refs)));
+    |                         ------------------- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `&[u32]`, found `Cow<'_, _>`
+    |                         |
+    |                         arguments to this enum variant are incorrect
+    |
+    = note: expected reference `&[u32]`
+                    found enum `Cow<'_, _>`
+note: tuple variant defined here
+   --> C:\Users\soull\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\wasm-encoder-0.211.1\src\core\elements.rs:48:5
+    |
+ 48 |     Functions(&'a [u32]),
+    |     ^^^^^^^^^
+help: consider borrowing here
+    |
+768 |              elements.active(Some(0), &ConstExpr::i32_const(start_func_idx as i32), RefType::FUNCREF, Elements::Functions(&std::borrow::Cow::Owned(func_refs)));
+    |                                                                                                                           +
+
+error[E0061]: this method takes 3 arguments but 4 arguments were supplied
+   --> src\codegen.rs:768:23
+    |
+768 | ...   elements.active(Some(0), &ConstExpr::i32_const(start_func_idx as i32), RefType::FUNCREF, Elements::Functions(std::borrow::Cow::Owne...
+    |                ^^^^^^                                                        ---------------- unexpected argument #3 of type `RefType`
+    |
+note: method defined here
+   --> C:\Users\soull\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\wasm-encoder-0.211.1\src\core\elements.rs:168:12
+    |
+168 |     pub fn active(
+    |            ^^^^^^
+help: remove the extra argument
+    |
+768 -              elements.active(Some(0), &ConstExpr::i32_const(start_func_idx as i32), RefType::FUNCREF, Elements::Functions(std::borrow::Cow::Owned(func_refs)));
+768 +              elements.active(Some(0), &ConstExpr::i32_const(start_func_idx as i32), Elements::Functions(std::borrow::Cow::Owned(func_refs)));
+    |
+
+Some errors have detailed explanations: E0061, E0063, E0308.
+For more information about an error, try `rustc --explain E0061`.
+warning: `cell` (bin "cell") generated 3 warnings
+error: could not compile `cell` (bin "cell") due to 7 previous errors; 3 warnings emitted

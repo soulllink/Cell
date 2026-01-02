@@ -1,0 +1,5 @@
+Compiling Cell project...
+Input: examples\fizzbuzz.csv
+Output: examples\fizzbuzz.wasm
+Loaded grid with max_col: 1, max_row: 1
+Error: Codegen failed: Failed to parse function body: Parsing Error: Error { input: "while i < 16 do\r\n    if mod(i, 15) = 0 do\r\n      put(\"FizzBuzz\")\r\n    else\r\n      if mod(i, 3) = 0 do\r\n        put(\"Fizz\")\r\n      else\r\n        if mod(i, 5) = 0 do\r\n          put(\"Buzz\")\r\n        else\r\n          put(i)\r\n        end\r\n      end\r\n    end\r\n    i = i + 1\r\n  end\r\nend", code: Tag }

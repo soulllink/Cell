@@ -1,6 +1,8 @@
-mod loader;
-mod parser;
-mod codegen;
+use cell::loader;
+use cell::compiler;
+// Parser used indirectly? or directly?
+// main.rs doesn't seem to use parser directly, it calls compiler.
+// But check imports.
 
 use clap::Parser;
 use anyhow::Result;
@@ -45,7 +47,7 @@ fn run() -> Result<()> {
     println!("Loaded grid with max_col: {}, max_row: {}", grid.max_col, grid.max_row);
 
     // 2. Start Codegen (which includes parsing)
-    let mut compiler = codegen::WasmCompiler::new(&grid);
+    let mut compiler = compiler::WasmCompiler::new(&grid);
     let wasm_bytes = compiler.generate().map_err(|e| anyhow::anyhow!("Codegen failed: {}", e))?;
     
     // 3. Write Output

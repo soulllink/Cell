@@ -1,0 +1,7 @@
+(Debug! do
+ i = 0
+ while i < 10 do
+   put(i)
+   i = i + 1
+ end
+end)
