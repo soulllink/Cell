@@ -16,8 +16,11 @@ pub fn compile_cell(
     arity_to_type_idx: &HashMap<usize, u32>,
     my_table_idx: u32,
     reg_val_idx: u32,
+    cur_col_idx: u32,
+    cur_row_idx: u32,
     string_literals: &HashMap<String, (u32, u32)>,
     grid: &crate::loader::CellGrid,
+    use_context_init: bool,
 ) -> Result<Function> {
     let stmts = &func_def.body.stmts;
     let mut locals_map = HashMap::new();
@@ -34,10 +37,13 @@ pub fn compile_cell(
     // 2. Scan for locals
     scan_locals(stmts, &mut locals_map, &mut locals_types, &mut next_local_idx);
     
-    // Sum iterators for generator stubs (keeping logical consistency with original)
-    // let sum_i_idx = next_local_idx; locals_types.push(ValType::I32); next_local_idx += 1;
-    // let sum_len_idx = next_local_idx; locals_types.push(ValType::I32); next_local_idx += 1;
-    // let sum_acc_idx = next_local_idx; locals_types.push(ValType::F64); 
+    // Add scratch I32 locals for internal use (e.g. pointers, relative refs)
+    let scratch_i32_idx = next_local_idx;
+    locals_types.push(ValType::I32);
+    next_local_idx += 1;
+    let scratch_i32_idx_2 = next_local_idx;
+    locals_types.push(ValType::I32);
+    next_local_idx += 1;
 
     let mut func = Function::new(locals_types.iter().map(|n| (1, *n)));
     
@@ -51,11 +57,23 @@ pub fn compile_cell(
         func_arity_map,
         arity_to_type_idx,
         reg_val_idx,
+        cur_col_idx,
+        cur_row_idx,
         loop_var_idx: None, // Will set in loops
         my_table_idx,
+        scratch_i32_idx,
+        scratch_i32_idx_2,
         string_literals,
         grid
     };
+    
+    // Initialize CUR_COL/CUR_ROW context
+    if use_context_init {
+        func.instruction(&Instruction::I32Const(col as i32));
+        func.instruction(&Instruction::GlobalSet(ctx.cur_col_idx));
+        func.instruction(&Instruction::I32Const(row as i32));
+        func.instruction(&Instruction::GlobalSet(ctx.cur_row_idx));
+    }
 
     compile_block_body(&ctx, &func_def.body, &mut func, false)?;
     
@@ -75,6 +93,15 @@ fn scan_locals(stmts: &[Stmt], map: &mut HashMap<String, u32>, types: &mut Vec<V
                     map.insert(name.clone(), *next_idx);
                     types.push(ValType::F64);
                     *next_idx += 1;
+                }
+            },
+            Stmt::Unpack(names, _) => {
+                for name in names {
+                    if !map.contains_key(name) {
+                        map.insert(name.clone(), *next_idx);
+                        types.push(ValType::F64);
+                        *next_idx += 1;
+                    }
                 }
             },
             Stmt::While(_, body) => scan_locals(&body.stmts, map, types, next_idx),
@@ -102,6 +129,20 @@ pub fn compile_block_body(ctx: &CompilerContext, block: &Block, instrs: &mut Fun
                 compile_expr(ctx, expr, instrs)?;
                 if let Some(idx) = ctx.locals.get(name) { instrs.instruction(&Instruction::LocalSet(*idx)); }
                 else if let Some(idx) = ctx.globals.get(name) { instrs.instruction(&Instruction::GlobalSet(*idx)); }
+                if is_last && needs_result { instrs.instruction(&Instruction::F64Const(0.0)); }
+            },
+            Stmt::Unpack(names, expr) => {
+                compile_expr(ctx, expr, instrs)?; // ptr on stack (as f64)
+                instrs.instruction(&Instruction::I32TruncF64S); // ptr as i32
+                instrs.instruction(&Instruction::LocalSet(ctx.scratch_i32_idx));
+                
+                for (idx, name) in names.iter().enumerate() {
+                    instrs.instruction(&Instruction::LocalGet(ctx.scratch_i32_idx)); 
+                    instrs.instruction(&Instruction::F64Load(wasm_encoder::MemArg { offset: (idx * 8) as u64, align: 3, memory_index: 0 }));
+                    
+                    if let Some(l_idx) = ctx.locals.get(name) { instrs.instruction(&Instruction::LocalSet(*l_idx)); }
+                    else if let Some(g_idx) = ctx.globals.get(name) { instrs.instruction(&Instruction::GlobalSet(*g_idx)); }
+                }
                 if is_last && needs_result { instrs.instruction(&Instruction::F64Const(0.0)); }
             },
             Stmt::Return(expr) => {

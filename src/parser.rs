@@ -4,7 +4,7 @@ use nom::{
     bytes::complete::{tag, take_while1},
     character::complete::{alpha1, alphanumeric1, digit1, multispace0, char},
     combinator::{map, map_res, opt, recognize, value, verify},
-    multi::{many0, separated_list0},
+    multi::{many0, separated_list0, separated_list1},
     sequence::{delimited, pair, preceded, tuple, terminated},
     IResult,
 };
@@ -24,7 +24,7 @@ pub enum Op {
     // List/Array
     Right, Concat, Take, Drop, Pad, Find, Apply, Move,
     // Other
-    Mod,
+    Mod, Fill, Splice,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -58,6 +58,7 @@ pub enum Direction {
     Right,
     Top,
     Bottom,
+    Middle,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -66,7 +67,7 @@ pub enum Expr {
     Reference(CellRef),
     RelativeRef(Direction),
     RangeReference(CellRef, CellRef),
-    InstanceApply(CellRef, CellRef, String),
+    InstanceApply(CellRef, CellRef, String, Option<Vec<String>>, Option<Block>, bool), // start, end, name, args, body, is_active
     Ident(String),
     UnaryOp(UnaryOp, Box<Expr>),
     BinaryOp(Box<Expr>, Op, Box<Expr>),
@@ -75,7 +76,11 @@ pub enum Expr {
     Input,
     Generator(u32),
     If(Box<Expr>, Box<Block>, Option<Box<Block>>),
+    Cond(Vec<(Expr, Block)>, Option<Box<Block>>),
+    Recur(Vec<Expr>),
     Block(Block),
+    Amend(Box<Expr>, Box<Expr>, Box<Expr>), // val, indices, func
+    Drill(Box<Expr>, Box<Expr>, Box<Expr>), // val, nested_indices, func
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -86,6 +91,7 @@ pub struct Block {
 #[derive(Debug, PartialEq, Clone)]
 pub enum Stmt {
     Assign(String, Expr),
+    Unpack(Vec<String>, Expr),
     Return(Expr),
     Yield(Expr),
     Expr(Expr),
@@ -136,7 +142,8 @@ fn parse_ident(input: &str) -> IResult<&str, String> {
     verify(parser, |s: &str| {
         let keywords = [
             "if", "else", "do", "end", "while", "for", "in", "fn", "return", "yield", 
-            "true", "false", "nil", "input",
+            "true", "false", "nil", "input", "cond", "recur", "unpack", "amend", 
+            "drill", "try", "splice", "progn", "set"
         ];
         !keywords.contains(&s)
     })(input).map(|(i, s)| (i, s.to_string()))
@@ -197,6 +204,7 @@ fn parse_relative_ref(input: &str) -> IResult<&str, Direction> {
             value(Direction::Right, tag("right")),
             value(Direction::Top, tag("top")),
             value(Direction::Bottom, tag("bottom")),
+            value(Direction::Middle, tag("middle")),
         ))
     )(input)
 }
@@ -229,9 +237,75 @@ fn parse_if(input: &str) -> IResult<&str, Expr> {
     Ok((input, Expr::If(Box::new(cond), Box::new(then_block), else_block_res.map(Box::new))))
 }
 
+fn parse_cond(input: &str) -> IResult<&str, Expr> {
+    let (input, _) = tag("cond")(input)?;
+    let (input, branches) = many0(tuple((
+        delimited(ws(char('(')), ws(parse_expr), ws(char(')'))),
+        ws(parse_block)
+    )))(input)?;
+    
+    let (input, else_branch) = opt(preceded(
+        ws(tag("else")),
+        ws(parse_block)
+    ))(input)?;
+    
+    let (input, _) = ws(tag("end"))(input)?;
+    
+    Ok((input, Expr::Cond(branches, else_branch.map(Box::new))))
+}
+
+fn parse_recur(input: &str) -> IResult<&str, Expr> {
+    let (input, _) = tag("recur")(input)?;
+    let (input, args) = delimited(
+        ws(char('(')),
+        separated_list0(ws(char(',')), parse_expr),
+        ws(char(')'))
+    )(input)?;
+    Ok((input, Expr::Recur(args)))
+}
+
+fn parse_amend(input: &str) -> IResult<&str, Expr> {
+    let (input, _) = tag("amend")(input)?;
+    let (input, args) = delimited(
+        ws(char('(')),
+        tuple((
+            ws(parse_expr), ws(char(',')),
+            ws(parse_expr), ws(char(',')),
+            ws(parse_expr)
+        )),
+        ws(char(')'))
+    )(input)?;
+    Ok((input, Expr::Amend(Box::new(args.0), Box::new(args.2), Box::new(args.4))))
+}
+
+fn parse_drill(input: &str) -> IResult<&str, Expr> {
+    let (input, _) = alt((tag("drill"), tag("try")))(input)?;
+    let (input, args) = delimited(
+        ws(char('(')),
+        tuple((
+            ws(parse_expr), ws(char(',')),
+            ws(parse_expr), ws(char(',')),
+            ws(parse_expr)
+        )),
+        ws(char(')'))
+    )(input)?;
+    Ok((input, Expr::Drill(Box::new(args.0), Box::new(args.2), Box::new(args.4))))
+}
+
+fn parse_progn(input: &str) -> IResult<&str, Expr> {
+    let (input, _) = tag("progn")(input)?;
+    let (input, body) = parse_block(input)?;
+    Ok((input, Expr::Block(body)))
+}
+
 fn parse_atom(input: &str) -> IResult<&str, Expr> {
     alt((
         parse_if,
+        parse_cond,
+        parse_recur,
+        parse_amend,
+        parse_drill,
+        parse_progn,
         // Relative reference (@left, @right, @top, @bottom)
         map(parse_relative_ref, Expr::RelativeRef),
         map(parse_literal, Expr::Literal),
@@ -242,10 +316,18 @@ fn parse_atom(input: &str) -> IResult<&str, Expr> {
             parse_cell_ref, 
             ws(char(':')), 
             parse_cell_ref,
-            opt(delimited(ws(char('(')), parse_ident, ws(char(')'))))
-        )), |(start, _, end, func)| {
-            if let Some(f) = func {
-                Expr::InstanceApply(start, end, f)
+            opt(delimited(
+                ws(char('(')),
+                tuple((
+                    ws(parse_func_name),
+                    many0(ws(parse_ident)),
+                    opt(ws(parse_block))
+                )),
+                ws(char(')'))
+            ))
+        )), |(start, _, end, func_data)| {
+            if let Some(((name, is_active), args, body)) = func_data {
+                Expr::InstanceApply(start, end, name, Some(args), body, is_active)
             } else {
                 Expr::RangeReference(start, end)
             }
@@ -276,16 +358,16 @@ fn parse_factor(input: &str) -> IResult<&str, Expr> {
     let (input, lhs) = ws(parse_unary)(input)?;
     let (input, op) = opt(tuple((
         ws(alt((
-            tag("×"), tag("*"), tag("/")
+            tag("×"), tag("*"), tag("/"), tag("Multiply"), tag("Divide")
         ))),
         parse_factor
     )))(input)?; 
     
     if let Some((op_str, rhs)) = op {
         let op = match op_str {
-            "×" => Op::Mul,
+            "×" | "Multiply" => Op::Mul,
             "*" => Op::Power,
-            "/" => Op::Div,
+            "/" | "Divide" => Op::Div,
             _ => unreachable!(),
         };
         Ok((input, Expr::BinaryOp(Box::new(lhs), op, Box::new(rhs))))
@@ -297,14 +379,14 @@ fn parse_factor(input: &str) -> IResult<&str, Expr> {
 fn parse_term(input: &str) -> IResult<&str, Expr> {
     let (input, lhs) = parse_factor(input)?;
     let (input, op) = opt(tuple((
-        ws(alt((tag("+"), tag("-"), tag("move"), tag("drop")))),
+        ws(alt((tag("+"), tag("-"), tag("move"), tag("drop"), tag("Add"), tag("Subtract")))),
         parse_term
     )))(input)?;
     
     if let Some((op_var, rhs)) = op {
         let op = match op_var { 
-            "+" => Op::Add, 
-            "-" => Op::Sub, 
+            "+" | "Add" => Op::Add, 
+            "-" | "Subtract" => Op::Sub, 
             "move" => Op::Move,
             "drop" => Op::Drop,
             _ => unreachable!() 
@@ -320,32 +402,35 @@ fn parse_comparison(input: &str) -> IResult<&str, Expr> {
     let (input, lhs) = parse_term(input)?;
     let (input, op) = opt(tuple((
         ws(alt((
-            tag("!="), tag("="), tag("<="), tag(">="), tag("<"), tag(">"),
-            // Add other comparison-like ops if needed, e.g. Match "Match"
-            tag("Match"), tag("And"), tag("Or"), tag("Mod"),
-            tag("Right"), tag("Concat"), tag("Take"), tag("Drop"), tag("Pad"), tag("Find"), tag("Apply")
+            alt((tag("!="), tag("="), tag("<="), tag(">="), tag("<"), tag(">"))),
+            alt((tag("Match"), tag("And"), tag("Or"), tag("Mod"), tag("Fill"), tag("Splice"))),
+            alt((tag("Right"), tag("Concat"), tag("Take"), tag("Drop"), tag("Pad"), tag("Find"), tag("Apply"))),
+            alt((tag("Min"), tag("Max"), tag("Less"), tag("More"), tag("Equal"), tag("Dict"), tag("Div"))),
+            alt((tag("Without"), tag("Reshape"), tag("Cut"), tag("Delete"), tag("Cast"), tag("Roll"), tag("Deal")))
         ))),
         parse_comparison
     )))(input)?;
     
     if let Some((op_str, rhs)) = op {
         let op = match op_str {
-            "=" => Op::Eq,
+            "=" | "Equal" => Op::Eq,
             "!=" => Op::Neq,
-            "<" => Op::Lt,
-            ">" => Op::Gt,
+            "<" | "Less" => Op::Lt,
+            ">" | "More" => Op::Gt,
             "<=" => Op::Le,
             ">=" => Op::Ge,
             "Match" => Op::Match,
-            "And" => Op::And,
-            "Or" => Op::Or,
-            "Mod" => Op::Mod,
+            "And" | "Min" => Op::And,
+            "Or" | "Max" => Op::Or,
+            "Mod" | "Dict" | "Div" => Op::Mod,
+            "Fill" | "Without" => Op::Fill,
+            "Splice" => Op::Splice,
             "Right" => Op::Right,
             "Concat" => Op::Concat,
-            "Take" => Op::Take,
-            "Drop" => Op::Drop,
-            "Pad" => Op::Pad,
-            "Find" => Op::Find,
+            "Take" | "Reshape" => Op::Take,
+            "Drop" | "Cut" | "Delete" => Op::Drop,
+            "Pad" | "Cast" => Op::Pad,
+            "Find" | "Roll" | "Deal" => Op::Find,
             "Apply" => Op::Apply,
             _ => unreachable!(),
         };
@@ -447,6 +532,13 @@ fn parse_stmt(input: &str) -> IResult<&str, Stmt> {
             )
         )), |(_, args)| Stmt::Expr(Expr::Call("put".to_string(), args))),
         map(tuple((parse_ident, ws(char('=')), ws(parse_expr))), |(id, _, e)| Stmt::Assign(id, e)),
+        map(tuple((tag("set"), ws(parse_ident), ws(parse_expr))), |(_, id, e)| Stmt::Assign(id, e)),
+        map(tuple((
+            tag("unpack"),
+            separated_list1(ws(char(',')), ws(parse_ident)),
+            ws(tag("=")),
+            parse_expr
+        )), |(_, ids, _, e)| Stmt::Unpack(ids, e)),
         map(parse_expr, Stmt::Expr),
     ))(input)
 }

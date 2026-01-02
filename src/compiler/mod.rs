@@ -20,6 +20,7 @@ pub struct WasmCompiler<'a> {
     parsed_cells: Vec<ParsedCell>,
     string_literals: HashMap<String, (u32, u32)>, // content -> (offset, len)
     next_string_offset: u32,
+    all_functions: Vec<(FunctionDef, Option<(u32, u32)>)>, // (func, opt_cell_pos)
 }
 
 impl<'a> WasmCompiler<'a> {
@@ -28,20 +29,14 @@ impl<'a> WasmCompiler<'a> {
             grid,
             parsed_cells: Vec::new(),
             string_literals: HashMap::new(),
-            next_string_offset: 1024, // Start after some reserved space
+            next_string_offset: 1024,
+            all_functions: Vec::new(),
         }
     }
     
     fn scan_globals(&self) -> Result<HashMap<String, u32>> {
-        let mut globals = HashMap::new();
-        let mut idx = 0;
+        let globals = HashMap::new();
         // User globals from A1..ZZ99 (Data cells only?)
-        // Or specific syntax? For now, we reuse logic if exists.
-        // Actually, in `codegen.rs` globals were just placeholders.
-        // Let's scan parsed cells for assignments to global-looking vars?
-        // Or assume all data cells are accessible via load.
-        // The previous implementation used `scan_globals` to find user-defined global variables if any.
-        // Let's assume standard behavior:
         Ok(globals)
     }
 
@@ -98,6 +93,7 @@ impl<'a> WasmCompiler<'a> {
                 Self::scan_block_strings(body, map, next_offset);
             },
             Stmt::FnDef(_, _, body) => Self::scan_block_strings(body, map, next_offset),
+            Stmt::Unpack(_, expr) => Self::scan_expr_strings(expr, map, next_offset),
         }
     }
 
@@ -112,7 +108,108 @@ impl<'a> WasmCompiler<'a> {
                 Self::scan_block_strings(then_b, map, next_offset);
                 if let Some(eb) = else_b { Self::scan_block_strings(eb, map, next_offset); }
             },
+            Expr::Cond(branches, else_b) => {
+                for (cond, body) in branches {
+                    Self::scan_expr_strings(cond, map, next_offset);
+                    Self::scan_block_strings(body, map, next_offset);
+                }
+                if let Some(eb) = else_b { Self::scan_block_strings(eb, map, next_offset); }
+            },
+            Expr::Recur(args) => { for arg in args { Self::scan_expr_strings(arg, map, next_offset); } },
+            Expr::Amend(v, i, f) | Expr::Drill(v, i, f) => {
+                Self::scan_expr_strings(v, map, next_offset);
+                Self::scan_expr_strings(i, map, next_offset);
+                Self::scan_expr_strings(f, map, next_offset);
+            },
             Expr::Array(items) => { for item in items { Self::scan_expr_strings(item, map, next_offset); } },
+            Expr::InstanceApply(_, _, _, _, body, _) => {
+                if let Some(b) = body { Self::scan_block_strings(b, map, next_offset); }
+            },
+            _ => {}
+        }
+    }
+
+    /// Scan all blocks for nested functions
+    fn scan_all_functions(&mut self) -> Result<()> {
+        for i in 0..self.parsed_cells.len() {
+            let cell = &self.parsed_cells[i];
+            let content = match &cell.content {
+                CellContent::Code(f) => Some((f.clone(), cell.col, cell.row)),
+                _ => None,
+            };
+            
+            if let Some((f, col, row)) = content {
+                self.all_functions.push((f.clone(), Some((col, row))));
+                self.scan_block_functions(&f.body);
+            }
+        }
+        Ok(())
+    }
+
+    fn scan_block_functions(&mut self, block: &Block) {
+        for stmt in &block.stmts {
+            self.scan_stmt_functions(stmt);
+        }
+    }
+
+    fn scan_stmt_functions(&mut self, stmt: &Stmt) {
+        match stmt {
+            Stmt::Assign(_, expr) => self.scan_expr_functions(expr),
+            Stmt::Return(expr) => self.scan_expr_functions(expr),
+            Stmt::Yield(expr) => self.scan_expr_functions(expr),
+            Stmt::Expr(expr) => self.scan_expr_functions(expr),
+            Stmt::While(expr, body) => {
+                self.scan_expr_functions(expr);
+                self.scan_block_functions(body);
+            },
+            Stmt::For(_, expr, body) => {
+                self.scan_expr_functions(expr);
+                self.scan_block_functions(body);
+            },
+            Stmt::FnDef(name, args, body) => {
+                self.all_functions.push((FunctionDef {
+                    name: name.clone(),
+                    args: args.clone(),
+                    body: body.clone(),
+                    is_active: false,
+                }, None));
+                self.scan_block_functions(body);
+            },
+            Stmt::Unpack(_, expr) => self.scan_expr_functions(expr),
+            _ => {}
+        }
+    }
+
+    fn scan_expr_functions(&mut self, expr: &Expr) {
+        match expr {
+            Expr::BinaryOp(lhs, _, rhs) => { self.scan_expr_functions(lhs); self.scan_expr_functions(rhs); },
+            Expr::UnaryOp(_, e) => self.scan_expr_functions(e),
+            Expr::Call(_, args) => { for arg in args { self.scan_expr_functions(arg); } },
+            Expr::If(cond, then_b, else_b) => {
+                self.scan_expr_functions(cond);
+                self.scan_block_functions(then_b);
+                if let Some(eb) = else_b { self.scan_block_functions(eb); }
+            },
+            Expr::Cond(branches, else_b) => {
+                for (cond, body) in branches {
+                    self.scan_expr_functions(cond);
+                    self.scan_block_functions(body);
+                }
+                if let Some(eb) = else_b { self.scan_block_functions(eb); }
+            },
+            Expr::Recur(args) => { for arg in args { self.scan_expr_functions(arg); } },
+            Expr::InstanceApply(_, _, name, args, body, is_active) => {
+                if let Some(b) = body {
+                    self.all_functions.push((FunctionDef {
+                        name: name.clone(),
+                        args: args.clone().unwrap_or_default(),
+                        body: b.clone(),
+                        is_active: *is_active,
+                    }, None));
+                    self.scan_block_functions(b);
+                }
+            },
+            Expr::Array(items) => { for item in items { self.scan_expr_functions(item); } },
             _ => {}
         }
     }
@@ -137,11 +234,12 @@ impl<'a> WasmCompiler<'a> {
     pub fn generate(&mut self) -> Result<Vec<u8>> {
         // 1. Parse all cells
         self.parse_all_cells()?;
+        self.scan_all_functions()?;
         let globals_map = self.scan_globals()?; 
         self.scan_all_strings()?; // Populate string map
 
         // Separate data/code
-        let data_cells: Vec<_> = self.parsed_cells.iter()
+        let _data_cells: Vec<_> = self.parsed_cells.iter()
             .filter(|c| matches!(c.content, CellContent::Data(_)))
             .collect();
         let code_cells: Vec<_> = self.parsed_cells.iter()
@@ -168,10 +266,8 @@ impl<'a> WasmCompiler<'a> {
         
         let mut arities = std::collections::HashSet::new();
         arities.insert(0); 
-        for cell in &code_cells {
-            if let CellContent::Code(f) = &cell.content {
-                arities.insert(f.args.len());
-            }
+        for (f, _) in &self.all_functions {
+            arities.insert(f.args.len());
         }
         let mut sorted_arities: Vec<_> = arities.into_iter().collect();
         sorted_arities.sort();
@@ -213,19 +309,19 @@ impl<'a> WasmCompiler<'a> {
         // Imports: 0-13 (14 imports). Start func idx = 14.
         let start_func_idx = 14;
         
-        for (i, cell) in code_cells.iter().enumerate() {
-            let arity = if let CellContent::Code(f) = &cell.content { f.args.len() } else { 0 };
+        for (i, (f, cell_pos)) in self.all_functions.iter().enumerate() {
+            let arity = f.args.len();
             let type_idx = *arity_to_type_idx.get(&arity).unwrap();
             functions.function(type_idx);
             
             let table_idx = start_func_idx + i as u32;
-            cell_func_map.insert((cell.col, cell.row), table_idx);
+            if let Some(pos) = cell_pos {
+                cell_func_map.insert(*pos, table_idx);
+            }
             func_indices.push(table_idx);
             
-            if let CellContent::Code(f) = &cell.content {
-                func_name_map.insert(f.name.clone(), table_idx);
-                func_arity_map.insert(f.name.clone(), arity as u32);
-            }
+            func_name_map.insert(f.name.clone(), table_idx);
+            func_arity_map.insert(f.name.clone(), arity as u32);
         }
         
         // Init (type 0)
@@ -240,12 +336,14 @@ impl<'a> WasmCompiler<'a> {
         functions.function(6);
         // ProcessData (type 7)
         functions.function(7);
+        // Runtime Min (type 2) - f64,f64 -> f64 which matches Hypot signature (Type 2)
+        functions.function(2); 
         
         module.section(&functions);
 
         // 4. Tables
         let mut tables = TableSection::new();
-        let table_count = start_func_idx + code_cells.len() as u32;
+        let table_count = start_func_idx + self.all_functions.len() as u32;
         tables.table(TableType {
             element_type: RefType::FUNCREF,
             minimum: (table_count + 100) as u64,
@@ -286,22 +384,25 @@ impl<'a> WasmCompiler<'a> {
              GlobalType { val_type: ValType::I32, mutable: true, shared: false },
              &ConstExpr::i32_const((self.grid.max_col * self.grid.max_row * 8 + 1024) as i32) // Start heap after grid + strings
         );
+        // CUR_COL
+        let cur_col_idx = heap_ptr_idx + 1;
+        global_section.global(
+            GlobalType { val_type: ValType::I32, mutable: true, shared: false },
+            &ConstExpr::i32_const(0)
+        );
+        // CUR_ROW
+        let cur_row_idx = heap_ptr_idx + 2;
+        global_section.global(
+            GlobalType { val_type: ValType::I32, mutable: true, shared: false },
+            &ConstExpr::i32_const(0)
+        );
         module.section(&global_section);
 
         // 7. Exports
         let mut exports = ExportSection::new();
         exports.export("memory", ExportKind::Memory, 0);
-        let init_func_idx = start_func_idx + code_cells.len() as u32;
+        let init_func_idx = start_func_idx + self.all_functions.len() as u32;
         let main_func_idx = init_func_idx + 1;
-        let main_func_idx = init_func_idx + 1;
-        let alloc_func_idx = main_func_idx + 1 + 2; // +1(fast_inv) +1(fast_hypot) ? No.
-        // Helper indices:
-        // Init: init_func_idx
-        // Main: init + 1
-        // FastInv: init + 2
-        // FastHypot: init + 3
-        // Alloc: init + 4
-        // ProcessData: init + 5
         let alloc_idx = init_func_idx + 4;
         let process_idx = init_func_idx + 5;
         
@@ -318,7 +419,7 @@ impl<'a> WasmCompiler<'a> {
         // We need to fix `main` loop type index.
         
         let mut elements = ElementSection::new();
-        let func_refs: Vec<u32> = (start_func_idx .. (start_func_idx + code_cells.len() as u32)).collect();
+        let func_refs: Vec<u32> = (start_func_idx .. (start_func_idx + self.all_functions.len() as u32)).collect();
         if !func_refs.is_empty() {
              elements.active(Some(0), &ConstExpr::i32_const(start_func_idx as i32), Elements::Functions(func_refs.as_slice()));
         }
@@ -327,18 +428,20 @@ impl<'a> WasmCompiler<'a> {
          // 9. Code (Bodies)
         let mut codes = CodeSection::new();
         
-        // Compile code cells
-        for (i, cell) in code_cells.iter().enumerate() {
-            if let CellContent::Code(func_def) = &cell.content {
-                let table_idx = start_func_idx + i as u32;
-                let func = stmt::compile_cell(
-                    cell.col, cell.row, func_def, &globals_map, &cell_func_map, 
-                    &func_name_map, &func_arity_map, &arity_to_type_idx, table_idx, reg_val_idx, 
-                    &self.string_literals,
-                    self.grid
-                )?;
-                codes.function(&func);
-            }
+        // Compile all functions
+        for (i, (f_def, cell_pos)) in self.all_functions.iter().enumerate() {
+            let (col, row) = cell_pos.unwrap_or((0, 0));
+            let use_context_init = cell_pos.is_some();
+            let table_idx = start_func_idx + i as u32;
+            let func = stmt::compile_cell(
+                col, row, f_def, &globals_map, &cell_func_map, 
+                &func_name_map, &func_arity_map, &arity_to_type_idx, table_idx, 
+                reg_val_idx, cur_col_idx, cur_row_idx,
+                &self.string_literals,
+                self.grid,
+                use_context_init
+            )?;
+            codes.function(&func);
         }
 
         // Init
@@ -349,12 +452,12 @@ impl<'a> WasmCompiler<'a> {
 
         // Main Loop
         // We need active cells..
-        let active_indices: Vec<u32> = code_cells.iter().enumerate()
-            .filter(|(_, c)| if let CellContent::Code(f) = &c.content { f.is_active } else { false } )
+        let active_indices: Vec<u32> = self.all_functions.iter().enumerate()
+            .filter(|(_, (f, _))| f.is_active)
             .map(|(i, _)| start_func_idx + i as u32)
             .collect();
         
-        let num_code_cells = code_cells.len() as u32;
+        let num_total_functions = self.all_functions.len() as u32;
         let mut main_func = Function::new([(1, ValType::I32)]); 
         // Call init
         main_func.instruction(&Instruction::Call(init_func_idx));
@@ -378,7 +481,7 @@ impl<'a> WasmCompiler<'a> {
             // If index > num_code, stop? 
             // Our convention: return code_cells.len() + 1 to stop.
             main_func.instruction(&Instruction::LocalGet(0));
-            main_func.instruction(&Instruction::I32Const(num_code_cells as i32));
+            main_func.instruction(&Instruction::I32Const(num_total_functions as i32));
             main_func.instruction(&Instruction::I32LeU);
             main_func.instruction(&Instruction::BrIf(0));
             main_func.instruction(&Instruction::End);
@@ -394,6 +497,8 @@ impl<'a> WasmCompiler<'a> {
         codes.function(&intrinsics::generate_alloc_with_global(heap_ptr_idx));
         // Process Data
         codes.function(&intrinsics::generate_process_data(self.grid.max_col));
+        // Runtime Min
+        codes.function(&intrinsics::generate_runtime_min());
         
         module.section(&codes);
         

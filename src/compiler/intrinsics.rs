@@ -94,7 +94,7 @@ pub fn generate_init_func(data_cells: &[ParsedCell], grid: &CellGrid) -> Functio
     init_func
 }
 
-pub fn generate_alloc(heap_base: u32) -> Function {
+pub fn generate_alloc(_heap_base: u32) -> Function {
     // Export "allocate" (size: i32) -> ptr: i32
     // Uses global HEAP_PTR (assumed at index 0? No, passed via other means or assumed fixed index)
     // Actually, `mod.rs` defines user globals. 
@@ -219,5 +219,32 @@ pub fn generate_process_data(max_col: u32) -> Function {
     func.instruction(&Instruction::End);
     func.instruction(&Instruction::End);
     
+    func
+}
+
+pub fn generate_runtime_min() -> Function {
+    let mut func = Function::new([]); 
+    
+    // if a == inf && b == inf return 0.0
+    func.instruction(&Instruction::LocalGet(0));
+    func.instruction(&Instruction::F64Abs); 
+    func.instruction(&Instruction::F64Const(f64::INFINITY));
+    func.instruction(&Instruction::F64Eq);
+    
+    func.instruction(&Instruction::LocalGet(1));
+    func.instruction(&Instruction::F64Abs); 
+    func.instruction(&Instruction::F64Const(f64::INFINITY));
+    func.instruction(&Instruction::F64Eq);
+    
+    func.instruction(&Instruction::I32And);
+    func.instruction(&Instruction::If(wasm_encoder::BlockType::Result(ValType::F64)));
+        func.instruction(&Instruction::F64Const(0.0));
+    func.instruction(&Instruction::Else);
+        func.instruction(&Instruction::LocalGet(0));
+        func.instruction(&Instruction::LocalGet(1));
+        func.instruction(&Instruction::F64Min);
+    func.instruction(&Instruction::End);
+    
+    func.instruction(&Instruction::End);
     func
 }

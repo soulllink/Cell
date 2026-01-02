@@ -1,5 +1,6 @@
 # Cell
 
+![Cell Preview](preview.jpg)
 
 **Cell** is an **experimental, array-focused programming language** that lives inside spreadsheets. It compiles OpenDocument Spreadsheets (`.ods`) directly into highly optimized, standalone WebAssembly (`.wasm`) binaries.
 
@@ -59,6 +60,7 @@ Cell provides semantic relative addressing directions:
 *   `@right` : Cell to the immediate right (Column + 1)
 *   `@top`   : Cell immediately above (Row - 1)
 *   `@bottom`: Cell immediately below (Row + 1)
+*   `@middle`: The current cell (Column, Row) - useful for fetching the original value.
 
 ### 5. Math & Performance Example
 Standard vs Quake optimization:
@@ -136,11 +138,19 @@ end
 * `A1 drop 1` (Offset row +1)
 
 **Instance Application**
-Apply a function to a range of cells:
+Apply a function to a range of cells. This can be used for complex algorithms like Shortest Path:
+
 ```ruby
-(Double x do return x * 2 end)
-(Main! do
-  A1:B2(Double)
+(Instance! do
+  # Apply Minmax computation to a 10x23 grid
+  A1:J23(Minmax! do
+    # Pathfinding: result = min(path_above, path_left) + distance_here
+    return min(@left, @top) + @middle
+  end)
+end)
+
+(Output! do
+  put(J23) # Output the final shortest path value
 end)
 ```
 

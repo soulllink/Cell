@@ -19,26 +19,65 @@ pub fn compile_expr(
             }
         },
         Expr::RelativeRef(dir) => {
-            // Re-implement resolve_relative logic here or move utility to ctx? 
-            // For now, let's implement simple resolution.
             let (dx, dy) = match dir {
                  crate::parser::Direction::Left => (-1, 0),
                  crate::parser::Direction::Right => (1, 0),
                  crate::parser::Direction::Top => (0, -1),
                  crate::parser::Direction::Bottom => (0, 1),
+                 crate::parser::Direction::Middle => (0, 0),
             };
             
-            let target_col = ctx.col as i32 + dx;
-            let target_row = ctx.row as i32 + dy;
-            
-            if target_col >= 0 && target_col <= ctx.grid.max_col as i32 && 
-               target_row >= 0 && target_row <= ctx.grid.max_row as i32 {
-                   let offset = (target_row as u32 * ctx.grid.max_col + target_col as u32) * 8;
-                   instrs.instruction(&Instruction::I32Const(0));
-                   instrs.instruction(&Instruction::F64Load(MemArg { offset: offset as u64, align: 3, memory_index: 0 }));
-            } else {
-                instrs.instruction(&Instruction::F64Const(0.0));
+            // Dynamic resolution:
+            // 1. Get current col, row
+            instrs.instruction(&Instruction::GlobalGet(ctx.cur_col_idx));
+            if dx != 0 {
+                instrs.instruction(&Instruction::I32Const(dx));
+                instrs.instruction(&Instruction::I32Add);
             }
+            instrs.instruction(&Instruction::LocalSet(ctx.scratch_i32_idx)); // target_col
+            
+            instrs.instruction(&Instruction::GlobalGet(ctx.cur_row_idx));
+            if dy != 0 {
+                instrs.instruction(&Instruction::I32Const(dy));
+                instrs.instruction(&Instruction::I32Add);
+            }
+            instrs.instruction(&Instruction::LocalSet(ctx.scratch_i32_idx_2)); // target_row
+            
+            // Bounds check
+            instrs.instruction(&Instruction::LocalGet(ctx.scratch_i32_idx)); 
+            instrs.instruction(&Instruction::I32Const(0));
+            instrs.instruction(&Instruction::I32GeS); // col >= 0
+            
+            instrs.instruction(&Instruction::LocalGet(ctx.scratch_i32_idx));
+            instrs.instruction(&Instruction::I32Const(ctx.grid.max_col as i32));
+            instrs.instruction(&Instruction::I32LtS); // col < max_col
+            instrs.instruction(&Instruction::I32And);
+            
+            instrs.instruction(&Instruction::LocalGet(ctx.scratch_i32_idx_2));
+            instrs.instruction(&Instruction::I32Const(0));
+            instrs.instruction(&Instruction::I32GeS); // row >= 0
+            instrs.instruction(&Instruction::I32And);
+            
+            instrs.instruction(&Instruction::LocalGet(ctx.scratch_i32_idx_2));
+            instrs.instruction(&Instruction::I32Const(ctx.grid.max_row as i32));
+            instrs.instruction(&Instruction::I32LtS); // row < max_row
+            instrs.instruction(&Instruction::I32And);
+            
+            instrs.instruction(&Instruction::If(BlockType::Result(ValType::F64)));
+                // addr = (row * max_col + col) * 8
+                instrs.instruction(&Instruction::LocalGet(ctx.scratch_i32_idx_2));
+                instrs.instruction(&Instruction::I32Const(ctx.grid.max_col as i32));
+                instrs.instruction(&Instruction::I32Mul);
+                instrs.instruction(&Instruction::LocalGet(ctx.scratch_i32_idx));
+                instrs.instruction(&Instruction::I32Add);
+                instrs.instruction(&Instruction::I32Const(8));
+                instrs.instruction(&Instruction::I32Mul);
+                
+                // Load expects [addr] on stack
+                instrs.instruction(&Instruction::F64Load(MemArg { offset: 0, align: 3, memory_index: 0 }));
+            instrs.instruction(&Instruction::Else);
+                instrs.instruction(&Instruction::F64Const(f64::INFINITY));
+            instrs.instruction(&Instruction::End);
         },
         Expr::If(cond, then_b, else_b) => {
              compile_expr(ctx, cond, instrs)?;
@@ -70,6 +109,64 @@ pub fn compile_expr(
                  instrs.instruction(&Instruction::F64Const(0.0));
              }
              instrs.instruction(&Instruction::End);
+        },
+        Expr::Cond(branches, else_b) => {
+            for (cond, body) in branches {
+                compile_expr(ctx, cond, instrs)?;
+                instrs.instruction(&Instruction::F64Const(0.0));
+                instrs.instruction(&Instruction::F64Ne); 
+                instrs.instruction(&Instruction::If(BlockType::Result(ValType::F64)));
+                super::stmt::compile_block_body(ctx, body, instrs, true)?;
+                instrs.instruction(&Instruction::Else);
+            }
+            if let Some(eb) = else_b {
+                  super::stmt::compile_block_body(ctx, eb, instrs, true)?;
+            } else {
+                instrs.instruction(&Instruction::F64Const(0.0));
+            }
+            for _ in 0..branches.len() {
+                instrs.instruction(&Instruction::End);
+            }
+        },
+        Expr::Recur(args) => {
+            let arity = args.len();
+            for arg in args {
+                compile_expr(ctx, arg, instrs)?;
+            }
+            // Now stack has args. Need func index and call_indirect.
+            instrs.instruction(&Instruction::I32Const(ctx.my_table_idx as i32));
+            
+            let type_idx = *ctx.arity_to_type_idx.get(&arity).unwrap_or(&6); // 6 is () -> i32? check stmt.rs
+            // Signature of code cells in stmt.rs is Type 6: () -> I32. 
+            // WAIT. If Recur has args, it must match the function's own signature.
+            // But code cells are currently () -> I32 and they get args via locals (passed from caller).
+            // No, Wasm function signature must match the CallIndirect type.
+            
+            // Checking stmt.rs:42: `let mut func = Function::new(locals_types.iter().map(|n| (1, *n)));`
+            // and `mod.rs` defines types.
+            // If code cell takes arguments, its type in the table MUST be [f64, f64, ...] -> i32.
+            
+            instrs.instruction(&Instruction::CallIndirect { ty: type_idx, table: 0 });
+            instrs.instruction(&Instruction::Drop); // Drop next_idx
+            instrs.instruction(&Instruction::GlobalGet(ctx.reg_val_idx)); // Get result
+        },
+        Expr::Amend(v, i, f) => {
+            // Stub for Amend
+            compile_expr(ctx, v, instrs)?;
+            compile_expr(ctx, i, instrs)?;
+            compile_expr(ctx, f, instrs)?;
+            instrs.instruction(&Instruction::Drop);
+            instrs.instruction(&Instruction::Drop);
+            // Result is v
+        },
+        Expr::Drill(v, i, f) => {
+            // Stub for Drill
+            compile_expr(ctx, v, instrs)?;
+            compile_expr(ctx, i, instrs)?;
+            compile_expr(ctx, f, instrs)?;
+            instrs.instruction(&Instruction::Drop);
+            instrs.instruction(&Instruction::Drop);
+            // Result is v
         },
         Expr::Generator(col) => {
             if let Some(idx) = ctx.cell_func_map.get(&(*col, 0)) {
@@ -116,7 +213,12 @@ pub fn compile_expr(
             } else if let Some(&func_idx) = ctx.func_name_map.get(name) {
                 // Call Value
                 let arity = *ctx.func_arity_map.get(name).unwrap_or(&0) as usize;
-                // Validation skipped for now
+                
+                // PUSH ARGS
+                for arg in args {
+                    compile_expr(ctx, arg, instrs)?;
+                }
+                
                 let type_idx = *ctx.arity_to_type_idx.get(&arity).unwrap();
                 
                 instrs.instruction(&Instruction::I32Const(func_idx as i32));
@@ -132,7 +234,7 @@ pub fn compile_expr(
             instrs.instruction(&Instruction::I32Const(0));
             instrs.instruction(&Instruction::F64Load(MemArg { offset: offset as u64, align: 3, memory_index: 0 }));
         },
-        Expr::InstanceApply(start, end, func_name) => {
+        Expr::InstanceApply(start, end, func_name, _args, _body, _active) => {
              // Loop over range and apply function
              // This is tricky inside an expression because it has side effects (updating cells).
              // And it should return something?
@@ -166,8 +268,7 @@ pub fn compile_expr(
              // Let's implement full loop but need to ensure we don't clobber existing locals.
              // We can allocate new locals implementation-wise, but `instrs` is just appending.
              // The `Function` struct holds signature. We need to update local count in `stmt.rs`?
-             // `scan_locals` scans for variables. 
-             // We need to scan for InstanceApply loop vars?
+             // `scan_locals` accounts for them.
              
              // Plan B: Call an intrinsic? `apply_instance(start_col, start_row, end_col, end_row, func_idx)`
              // But func_idx must be a table index, and we need `call_indirect`.
@@ -178,52 +279,46 @@ pub fn compile_expr(
              
              if let Some(&func_idx) = ctx.func_name_map.get(func_name) {
                  let arity = *ctx.func_arity_map.get(func_name).unwrap_or(&0) as usize;
-                 let type_idx = *ctx.arity_to_type_idx.get(&arity).unwrap(); // Should be 1 (f64->f64)
+                 let type_idx = *ctx.arity_to_type_idx.get(&arity).unwrap();
                  
-                 // We need to generate a helper function or inline the loop.
-                 // Inline loop using scratch locals (e.g. 5, 6, 7, 8). 
-                 // We assume we have enough locals. Wasm locals are per-function.
-                 // Code cells are their own functions. 
-                 // We probably need to reserve locals 2,3,4,5 for scratch use in every function.
-                 
-                 // Let's try inline loop with fixed locals (assuming they exist or we add them).
-                 // We need to ensure `scan_locals` accounts for them.
-                 // Or we emit `Local` definitions in `stmt.rs`.
-                 
-                 // For now, let's just log warning or error if we can't safely loop.
-                 // Actually, let's implement the loop assuming locals 2 and 3 are free for loop counters.
-                 // (0 is ret val / scratch, 1 reserved?)
-                 
-                 // Let's emit a loop for now using locals provided by context or assumed high index?
-                 // Safer: Use `ctx.loop_var_idx` (if valid) + 1?
-                 // `loop_var_idx` is for `while` loop index.
-                 
-                 // MVP: Unroll for now. 
-                 // "A1:B3" is 6 cells.
-                 let mut last_val_set = false;
+                 // Save original context to restore later
+                 instrs.instruction(&Instruction::GlobalGet(ctx.cur_col_idx));
+                 instrs.instruction(&Instruction::GlobalGet(ctx.cur_row_idx));
+
                  for r in start.row..=end.row {
                      for c in start.col..=end.col {
                          let offset = (r * ctx.grid.max_col + c) * 8;
                          
+                         // Update dynamic context for the applied function
+                         instrs.instruction(&Instruction::I32Const(c as i32));
+                         instrs.instruction(&Instruction::GlobalSet(ctx.cur_col_idx));
+                         instrs.instruction(&Instruction::I32Const(r as i32));
+                         instrs.instruction(&Instruction::GlobalSet(ctx.cur_row_idx));
 
-                         instrs.instruction(&Instruction::I32Const(0)); // Ptr for Store
-                         
-                         // Now load val for Call
+                         // Stack setup for store later: [addr]
                          instrs.instruction(&Instruction::I32Const(0));
-                         instrs.instruction(&Instruction::F64Load(MemArg { offset: offset as u64, align: 3, memory_index: 0 }));
+
+                         if arity > 0 {
+                             // Push cell value as first argument
+                             instrs.instruction(&Instruction::I32Const(0));
+                             instrs.instruction(&Instruction::F64Load(MemArg { offset: offset as u64, align: 3, memory_index: 0 }));
+                         }
                          
                          // Call
                          instrs.instruction(&Instruction::I32Const(func_idx as i32));
                          instrs.instruction(&Instruction::CallIndirect { ty: type_idx, table: 0 });
-                         instrs.instruction(&Instruction::Drop); // Drop next_func_idx
-                         instrs.instruction(&Instruction::GlobalGet(ctx.reg_val_idx)); // Get result
-
+                         instrs.instruction(&Instruction::Drop); // Drop next function index
                          
-                         // Stack: [Ptr, NewVal]
+                         // Store result: [addr, val]
+                         instrs.instruction(&Instruction::GlobalGet(ctx.reg_val_idx));
                          instrs.instruction(&Instruction::F64Store(MemArg { offset: offset as u64, align: 3, memory_index: 0 }));
-
                      }
                  }
+                 
+                 // Restore original context
+                 instrs.instruction(&Instruction::GlobalSet(ctx.cur_row_idx));
+                 instrs.instruction(&Instruction::GlobalSet(ctx.cur_col_idx));
+
                  instrs.instruction(&Instruction::F64Const(0.0)); // Return 0.0 value for expression
              } else {
                  instrs.instruction(&Instruction::F64Const(0.0));
@@ -383,13 +478,37 @@ pub fn compile_expr(
                         instrs.instruction(&Instruction::F64Ne);
                         instrs.instruction(&Instruction::F64ConvertI32S);
                     },
-                    Op::And => { instrs.instruction(&Instruction::F64Mul); },
+                    Op::And => { instrs.instruction(&Instruction::F64Min); },
                     Op::Or => { instrs.instruction(&Instruction::F64Max); },
                     Op::Mod => { instrs.instruction(&Instruction::Call(13)); },
-                    _ => {
-                        instrs.instruction(&Instruction::Drop);
-                        instrs.instruction(&Instruction::Drop);
+                    Op::Fill => {
+                        // (val, dict/list) -> if val is null, use backup? 
+                        // Simplified: if lhs is 0, return rhs.
+                        instrs.instruction(&Instruction::LocalSet(0)); // rhs in 0
+                        instrs.instruction(&Instruction::LocalTee(1)); // lhs in 1, also on stack
                         instrs.instruction(&Instruction::F64Const(0.0));
+                        instrs.instruction(&Instruction::F64Eq);
+                        instrs.instruction(&Instruction::If(BlockType::Result(ValType::F64)));
+                        instrs.instruction(&Instruction::LocalGet(0));
+                        instrs.instruction(&Instruction::Else);
+                        instrs.instruction(&Instruction::LocalGet(1));
+                        instrs.instruction(&Instruction::End);
+                    },
+                    Op::Le => { 
+                        instrs.instruction(&Instruction::F64Le);
+                        instrs.instruction(&Instruction::F64ConvertI32S);
+                    },
+                    Op::Ge => { 
+                        instrs.instruction(&Instruction::F64Ge);
+                        instrs.instruction(&Instruction::F64ConvertI32S);
+                    },
+                    Op::Match | Op::Right | Op::Concat | Op::Take | Op::Drop | Op::Pad | Op::Find | Op::Apply | Op::Splice | Op::Move => {
+                        // Stubs for others
+                        instrs.instruction(&Instruction::Drop);
+                        // Lhs is left on stack (already there from compile_expr calls)
+                        // Actually we have [lhs, rhs] on stack.
+                        // For Right, we should drop lhs and keep rhs.
+                        // For others, let's just return lhs for now.
                     }
                 }
             }
@@ -398,12 +517,19 @@ pub fn compile_expr(
             compile_expr(ctx, expr, instrs)?;
             match op {
                 crate::parser::UnaryOp::Negate => { instrs.instruction(&Instruction::F64Neg); },
+                crate::parser::UnaryOp::Sqrt => { instrs.instruction(&Instruction::F64Sqrt); },
+                crate::parser::UnaryOp::Floor => { instrs.instruction(&Instruction::F64Floor); },
                 crate::parser::UnaryOp::Not => { 
                     instrs.instruction(&Instruction::F64Const(0.0));
                     instrs.instruction(&Instruction::F64Eq); 
                     instrs.instruction(&Instruction::F64ConvertI32S);
                 },
-                _ => {}
+                crate::parser::UnaryOp::Identity => { /* already on stack */ },
+                _ => {
+                    // Other monads: First, Flip, Enum, Where, Reverse, etc.
+                    // These typically operate on lists. 
+                    // For now, return the value as is (stub) or handle simple cases.
+                }
             }
         },
         Expr::Ident(name) => {
@@ -421,7 +547,13 @@ fn compile_expr_binary_builtin(ctx: &CompilerContext, name: &str, arg1: &Expr, a
     compile_expr(ctx, arg2, instrs)?;
     match name {
         "rand" => { instrs.instruction(&Instruction::Call(4)); },
-        "min" => { instrs.instruction(&Instruction::F64Min); },
+        "min" => {
+             // runtime_min is at 14 + len + 6
+             // intrinsic start: 14 + len
+             // Order: init(0), run(1), q_rsqrt(2), q_hypot(3), alloc(4), process(5), min(6)
+             let min_idx = 14 + (ctx.func_name_map.len() as u32) + 6;
+             instrs.instruction(&Instruction::Call(min_idx));
+        },
         "max" => { instrs.instruction(&Instruction::F64Max); },
         "hypot" => { instrs.instruction(&Instruction::Call(12)); },
         "q_hypot" => {

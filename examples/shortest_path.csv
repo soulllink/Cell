@@ -1,0 +1,4 @@
+(Instance! do A2:C4(Minmax! do return min(@left, @top) + @middle end) end),,
+0,1,1
+1,1,1
+1,1,1

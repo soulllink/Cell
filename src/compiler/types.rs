@@ -21,8 +21,12 @@ pub struct CompilerContext<'a> {
     pub func_arity_map: &'a HashMap<String, u32>,
     pub arity_to_type_idx: &'a HashMap<usize, u32>,
     pub reg_val_idx: u32,
+    pub cur_col_idx: u32,
+    pub cur_row_idx: u32,
     pub loop_var_idx: Option<u32>,
     pub my_table_idx: u32,
+    pub scratch_i32_idx: u32,
+    pub scratch_i32_idx_2: u32,
     pub string_literals: &'a HashMap<String, (u32, u32)>,
     pub grid: &'a CellGrid,
 }
