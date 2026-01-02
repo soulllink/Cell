@@ -1,0 +1,3 @@
+10,20
+(Double x do return x * 2 end),
+(Main! do A1:B1(Double) put(A1) put(B1) end),

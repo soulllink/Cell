@@ -1,0 +1,3 @@
+10,20
+40,50
+(Main! do put(A1 drop 1) put(A1 move 1) put(B2 move -1) put(B2 drop -1) end),

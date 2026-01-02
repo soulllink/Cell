@@ -130,6 +130,29 @@ end
 
 ---
 
+### 6. Advanced Addressing & Injection
+**Relative Movement/Offset**
+* `A1 move 1` (Offset column +1)
+* `A1 drop 1` (Offset row +1)
+
+**Instance Application**
+Apply a function to a range of cells:
+```ruby
+(Double x do return x * 2 end)
+(Main! do
+  A1:B2(Double)
+end)
+```
+
+**Data Injection (Wasm Exports)**
+The compiler exports `allocate` and `process_data` to allow injecting data from the host (JS/Deno):
+```typescript
+const ptr = allocate(size);
+process_data(charCode, ptr, length);
+```
+
+---
+
 ## ◆ Running Examples with Deno
 
 You can execute the compiled `.wasm` binaries using the included `run.ts` script with [Deno](https://deno.land/).
@@ -142,12 +165,13 @@ cargo build --release
 ### 2. Compile an Example
 ```bash
 # Compile FizzBuzz
-target/release/cell examples/fizzbuzz.csv -o examples/fizzbuzz.wasm
+target/release/cell examples/fizzbuzz.csv -o Executables/fizzbuzz.wasm
 ```
 
 ### 3. Run with Deno
 ```bash
-deno run --allow-read run.ts examples/fizzbuzz.wasm
+deno run --allow-read run.ts Executables/fizzbuzz.wasm
+```
 ```
 
 ---

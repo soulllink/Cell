@@ -158,11 +158,13 @@ impl<'a> WasmCompiler<'a> {
         types.function([ValType::F64], [ValType::F64]);      // 3: 
         types.function([], [ValType::F64]);                  // 4: ->f64
         types.function([ValType::I32, ValType::I32], []);    // 5: (i32,i32)->void (print)
+        types.function([ValType::I32], [ValType::I32]);      // 6: i32->i32 (allocate)
+        types.function([ValType::I32, ValType::I32, ValType::I32], []); // 7: (i32,i32,i32)->void (process_data)
         
         // Dynamic types for cell functions: [f64; N] -> [i32] (Return next func index)
-        // Base type index for cell types starts at 6
+        // Base type index for cell types starts at 8
         let mut arity_to_type_idx = HashMap::new();
-        let mut next_type_idx = 6;
+        let mut next_type_idx = 8;
         
         let mut arities = std::collections::HashSet::new();
         arities.insert(0); 
@@ -234,6 +236,10 @@ impl<'a> WasmCompiler<'a> {
         functions.function(1); 
         // Fast Hypot (type 2)
         functions.function(2);
+        // Allocate (type 6)
+        functions.function(6);
+        // ProcessData (type 7)
+        functions.function(7);
         
         module.section(&functions);
 
@@ -274,6 +280,12 @@ impl<'a> WasmCompiler<'a> {
             GlobalType { val_type: ValType::F64, mutable: true, shared: false },
             &ConstExpr::f64_const(0.0)
         );
+        // Heap Pointer Global
+        let heap_ptr_idx = reg_val_idx + 1;
+        global_section.global(
+             GlobalType { val_type: ValType::I32, mutable: true, shared: false },
+             &ConstExpr::i32_const((self.grid.max_col * self.grid.max_row * 8 + 1024) as i32) // Start heap after grid + strings
+        );
         module.section(&global_section);
 
         // 7. Exports
@@ -281,10 +293,30 @@ impl<'a> WasmCompiler<'a> {
         exports.export("memory", ExportKind::Memory, 0);
         let init_func_idx = start_func_idx + code_cells.len() as u32;
         let main_func_idx = init_func_idx + 1;
+        let main_func_idx = init_func_idx + 1;
+        let alloc_func_idx = main_func_idx + 1 + 2; // +1(fast_inv) +1(fast_hypot) ? No.
+        // Helper indices:
+        // Init: init_func_idx
+        // Main: init + 1
+        // FastInv: init + 2
+        // FastHypot: init + 3
+        // Alloc: init + 4
+        // ProcessData: init + 5
+        let alloc_idx = init_func_idx + 4;
+        let process_idx = init_func_idx + 5;
+        
         exports.export("run", ExportKind::Func, main_func_idx);
+        exports.export("allocate", ExportKind::Func, alloc_idx);
+        exports.export("process_data", ExportKind::Func, process_idx);
         module.section(&exports);
         
         // 8. Elements
+        // Check inferred type index for call_indirect.
+        // We defaulted to 6 in `main` loop. It should be types.len() - 2 + arity type..
+        // Wait, arity types start at 8. 
+        // 0-arity func is type 8.
+        // We need to fix `main` loop type index.
+        
         let mut elements = ElementSection::new();
         let func_refs: Vec<u32> = (start_func_idx .. (start_func_idx + code_cells.len() as u32)).collect();
         if !func_refs.is_empty() {
@@ -339,7 +371,7 @@ impl<'a> WasmCompiler<'a> {
              // Type for cells (arity 0) is type_idx from map.
              // arity 0 -> type 6 (assuming) which is []->[i32].
              // We need to look it up.
-            let type_idx = *arity_to_type_idx.get(&0).unwrap_or(&6); // Default 6
+            let type_idx = *arity_to_type_idx.get(&0).unwrap_or(&8); // Default 8 (0-arity)
             main_func.instruction(&Instruction::CallIndirect { ty: type_idx, table: 0 });
             main_func.instruction(&Instruction::LocalSet(0)); // Update next func index
             
@@ -358,6 +390,10 @@ impl<'a> WasmCompiler<'a> {
         codes.function(&intrinsics::generate_fast_inv_sqrt());
         // Fast Hypot
         codes.function(&intrinsics::generate_fast_hypot());
+        // Allocate
+        codes.function(&intrinsics::generate_alloc_with_global(heap_ptr_idx));
+        // Process Data
+        codes.function(&intrinsics::generate_process_data(self.grid.max_col));
         
         module.section(&codes);
         

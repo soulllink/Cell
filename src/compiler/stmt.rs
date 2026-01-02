@@ -114,7 +114,7 @@ pub fn compile_block_body(ctx: &CompilerContext, block: &Block, instrs: &mut Fun
                      }
                  } else {
                      compile_expr(ctx, expr, instrs)?;
-                     instrs.instruction(&Instruction::Drop);
+                     instrs.instruction(&Instruction::GlobalSet(ctx.reg_val_idx));
                      instrs.instruction(&Instruction::I32Const((ctx.my_table_idx + 1) as i32)); 
                  }
                  instrs.instruction(&Instruction::Return);
