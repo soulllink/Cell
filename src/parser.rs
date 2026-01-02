@@ -22,7 +22,7 @@ pub enum Op {
     // Logical
     And, Or, Match,
     // List/Array
-    Right, Concat, Take, Drop, Pad, Find, Apply,
+    Right, Concat, Take, Drop, Pad, Find, Apply, Move,
     // Other
     Mod,
 }
@@ -66,6 +66,7 @@ pub enum Expr {
     Reference(CellRef),
     RelativeRef(Direction),
     RangeReference(CellRef, CellRef),
+    InstanceApply(CellRef, CellRef, String),
     Ident(String),
     UnaryOp(UnaryOp, Box<Expr>),
     BinaryOp(Box<Expr>, Op, Box<Expr>),
@@ -236,7 +237,19 @@ fn parse_atom(input: &str) -> IResult<&str, Expr> {
         map(parse_literal, Expr::Literal),
         map(terminated(tag("input"), opt(tuple((ws(char('(')), ws(char(')')))))), |_| Expr::Input),
         delimited(char('('), ws(parse_expr), char(')')),
-        map(tuple((parse_cell_ref, char(':'), parse_cell_ref)), |(start, _, end)| Expr::RangeReference(start, end)),
+        // RangeReference with optional instance function: A1:C3 or A1:C3(func)
+        map(tuple((
+            parse_cell_ref, 
+            ws(char(':')), 
+            parse_cell_ref,
+            opt(delimited(ws(char('(')), parse_ident, ws(char(')'))))
+        )), |(start, _, end, func)| {
+            if let Some(f) = func {
+                Expr::InstanceApply(start, end, f)
+            } else {
+                Expr::RangeReference(start, end)
+            }
+        }),
         map(tuple((parse_col_index, char(':'), parse_col_index)), |(start_col, _, _)| {
             Expr::Generator(start_col)
         }),
@@ -284,7 +297,7 @@ fn parse_factor(input: &str) -> IResult<&str, Expr> {
 fn parse_term(input: &str) -> IResult<&str, Expr> {
     let (input, lhs) = parse_factor(input)?;
     let (input, op) = opt(tuple((
-        ws(alt((tag("+"), tag("-")))),
+        ws(alt((tag("+"), tag("-"), tag("move"), tag("drop")))),
         parse_term
     )))(input)?;
     
@@ -292,7 +305,10 @@ fn parse_term(input: &str) -> IResult<&str, Expr> {
         let op = match op_var { 
             "+" => Op::Add, 
             "-" => Op::Sub, 
+            "move" => Op::Move,
+            "drop" => Op::Drop,
             _ => unreachable!() 
+
         };
         Ok((input, Expr::BinaryOp(Box::new(lhs), op, Box::new(rhs))))
     } else {

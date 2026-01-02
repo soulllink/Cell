@@ -18,7 +18,7 @@ Unlike traditional spreadsheet engines that interpret formulas at runtime, Cell 
 
 ## ◆ The Cell Language (Re-imagined)
 
-Cell uses a unique Lisp-like block syntax designed for easy writing within single spreadsheet cells.
+Cell uses a unique block syntax designed for easy writing within single spreadsheet cells.
 
 ### 1. Data Cells vs Code Cells
 *   **Data Cells**: Plain values (Numbers, Strings). They are loaded into memory but DO NOT execute.
