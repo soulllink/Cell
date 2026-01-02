@@ -1,6 +1,5 @@
 # Cell
 
-![Cell Preview](preview.jpg)
 
 **Cell** is an **experimental, array-focused programming language** that lives inside spreadsheets. It compiles OpenDocument Spreadsheets (`.ods`) directly into highly optimized, standalone WebAssembly (`.wasm`) binaries.
 
