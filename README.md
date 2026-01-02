@@ -172,9 +172,10 @@ target/release/cell examples/fizzbuzz.csv -o Executables/fizzbuzz.wasm
 ```bash
 deno run --allow-read run.ts Executables/fizzbuzz.wasm
 ```
-```
+
 
 ---
+
 
 ## ◆ Architecture
 
